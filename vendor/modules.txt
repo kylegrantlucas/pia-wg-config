@@ -1,0 +1,26 @@
+# github.com/benburkert/dns v0.0.0-20190225204957-d356cf78cdfc
+## explicit
+github.com/benburkert/dns
+github.com/benburkert/dns/edns
+# github.com/cpuguy83/go-md2man/v2 v2.0.2
+## explicit; go 1.11
+github.com/cpuguy83/go-md2man/v2/md2man
+# github.com/pkg/errors v0.9.1
+## explicit
+github.com/pkg/errors
+# github.com/russross/blackfriday/v2 v2.1.0
+## explicit
+github.com/russross/blackfriday/v2
+# github.com/urfave/cli/v2 v2.16.3
+## explicit; go 1.18
+github.com/urfave/cli/v2
+# github.com/xrash/smetrics v0.0.0-20201216005158-039620a65673
+## explicit
+github.com/xrash/smetrics
+# golang.org/x/crypto v0.0.0-20220411220226-7b82a4e95df4
+## explicit; go 1.17
+golang.org/x/crypto/curve25519
+golang.org/x/crypto/curve25519/internal/field
+# golang.zx2c4.com/wireguard/wgctrl v0.0.0-20220916014741-473347a5e6e3
+## explicit; go 1.17
+golang.zx2c4.com/wireguard/wgctrl/wgtypes
