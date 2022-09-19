@@ -4,7 +4,7 @@ A Wireguard config generator for Private Internet Access.
 
 ## Usage
 
-`go get -u github.com/kylegrantlucas/pia-wg-config`
+`go install github.com/kylegrantlucas/pia-wg-config@latest`
 
 `pia-wg-config -o wg0.conf USERNAME PASSWORD`
 
