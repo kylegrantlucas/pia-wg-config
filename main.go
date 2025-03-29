@@ -4,7 +4,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/kylegrantlucas/pia-wg-config/pia"
+	"github.com/Ephemeral-Dust/pia-wg-config/pia"
 	cli "github.com/urfave/cli/v2"
 )
 
@@ -32,6 +32,12 @@ func main() {
 				Value:   false,
 				Usage:   "Print verbose output",
 			},
+			&cli.BoolFlag{
+				Name:    "server",
+				Aliases: []string{"s"},
+				Value:   false,
+				Usage:   "Add Server common name to the config",
+			},
 		},
 	}
 
@@ -45,6 +51,13 @@ func defaultAction(c *cli.Context) error {
 	username := c.Args().Get(0)
 	password := c.Args().Get(1)
 	verbose := c.Bool("verbose")
+	serverName := c.Bool("server")
+
+	log.Printf("Username: %s\n", username)
+	log.Printf("Password: %s\n", password)
+	log.Printf("Region: %s\n", c.String("region"))
+	log.Printf("Verbose: %v\n", verbose)
+	log.Printf("Server: %v\n", serverName)
 
 	// create pia client
 	if verbose {
@@ -59,7 +72,7 @@ func defaultAction(c *cli.Context) error {
 	if verbose {
 		log.Print("creating wg config generator")
 	}
-	wgConfigGenerator := pia.NewPIAWgGenerator(piaClient, pia.PIAWgGeneratorConfig{Verbose: verbose})
+	wgConfigGenerator := pia.NewPIAWgGenerator(piaClient, pia.PIAWgGeneratorConfig{Verbose: verbose, ServerName: serverName})
 
 	// generate wg config
 	if verbose {
