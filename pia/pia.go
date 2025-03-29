@@ -1,6 +1,7 @@
 package pia
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -22,6 +23,7 @@ import (
 type PIAWgClient interface {
 	GetToken() (string, error)
 	AddKey(token, publickey string) (AddKeyResult, error)
+	getMetadataServerForRegion() Server
 }
 
 type Region string
@@ -34,6 +36,7 @@ type PIAClient struct {
 	username         string
 	password         string
 	verbose          bool
+	portForwarding   bool
 	caCert           []byte
 }
 
@@ -70,12 +73,13 @@ type Server struct {
 }
 
 // NewPIAClient creates a new PIA client for with the list of servers populated
-func NewPIAClient(username, password, region string, verbose bool) (*PIAClient, error) {
+func NewPIAClient(username, password, region string, verbose bool, portForwarding bool) (*PIAClient, error) {
 	piaClient := PIAClient{
-		username: username,
-		password: password,
-		region:   region,
-		verbose:  verbose,
+		username:       username,
+		password:       password,
+		region:         region,
+		verbose:        verbose,
+		portForwarding: portForwarding,
 	}
 
 	// Get list of servers
@@ -85,8 +89,15 @@ func NewPIAClient(username, password, region string, verbose bool) (*PIAClient, 
 	}
 
 	// Set servers
-	piaClient.metadataServers = piaClient.generateMetadataServerList(serverList)
-	piaClient.wireguardServers = piaClient.generateWireguardServerList(serverList)
+	piaClient.metadataServers, err = piaClient.generateMetadataServerList(serverList)
+	if err != nil {
+		return nil, err
+	}
+
+	piaClient.wireguardServers, err = piaClient.generateWireguardServerList(serverList)
+	if err != nil {
+		return nil, err
+	}
 
 	return &piaClient, nil
 }
@@ -94,6 +105,7 @@ func NewPIAClient(username, password, region string, verbose bool) (*PIAClient, 
 // GetToken
 func (p *PIAClient) GetToken() (string, error) {
 	server := p.getMetadataServerForRegion()
+
 	url := fmt.Sprintf("https://%v/authv3/generateToken", server.Cn)
 
 	// Send request
@@ -160,7 +172,7 @@ func (p *PIAClient) getMetadataServerForRegion() Server {
 func (p *PIAClient) getServerList() (piaServerList, error) {
 	var serverList piaServerList
 
-	resp, err := http.Get("https://serverlist.piaservers.net/vpninfo/servers/v4")
+	resp, err := http.Get("https://serverlist.piaservers.net/vpninfo/servers/v6")
 	if err != nil {
 		return piaServerList{}, err
 	}
@@ -185,10 +197,14 @@ func (p *PIAClient) getServerList() (piaServerList, error) {
 }
 
 // generateWireguardServerList
-func (p *PIAClient) generateWireguardServerList(list piaServerList) ServerList {
+func (p *PIAClient) generateWireguardServerList(list piaServerList) (ServerList, error) {
 	servers := ServerList{}
 
 	for _, r := range list.Regions {
+		if p.portForwarding && !r.PortForward {
+			continue
+		}
+
 		for _, server := range r.Servers.Wg {
 			servers[Region(r.ID)] = append(servers[Region(r.Name)], Server{
 				Cn: server.Cn,
@@ -197,14 +213,26 @@ func (p *PIAClient) generateWireguardServerList(list piaServerList) ServerList {
 		}
 	}
 
-	return servers
+	if len(servers) == 0 {
+		if p.portForwarding {
+			return nil, errors.New("No servers found for region: " + p.region + " with port forwarding enabled")
+		}
+
+		return nil, errors.New("No servers found for region: " + p.region)
+	}
+
+	return servers, nil
 }
 
 // generateMetadataServerList
-func (p *PIAClient) generateMetadataServerList(list piaServerList) ServerList {
+func (p *PIAClient) generateMetadataServerList(list piaServerList) (ServerList, error) {
 	servers := ServerList{}
 
 	for _, r := range list.Regions {
+		if p.portForwarding && !r.PortForward {
+			continue
+		}
+
 		for _, server := range r.Servers.Meta {
 			servers[Region(r.ID)] = append(servers[Region(r.Name)], Server{
 				Cn: server.Cn,
@@ -213,7 +241,15 @@ func (p *PIAClient) generateMetadataServerList(list piaServerList) ServerList {
 		}
 	}
 
-	return servers
+	if len(servers) == 0 {
+		if p.portForwarding {
+			return nil, errors.New("No servers found for region: " + p.region + " with port forwarding enabled")
+		}
+
+		return nil, errors.New("No servers found for region: " + p.region)
+	}
+
+	return servers, nil
 }
 
 func (p *PIAClient) executePIARequest(server Server, url, token string) (*http.Response, error) {
@@ -235,6 +271,7 @@ func (p *PIAClient) executePIARequest(server Server, url, token string) (*http.R
 	if err != nil {
 		return nil, errors.Wrap(err, "error downloading ca certificate")
 	}
+
 	caCertPool := x509.NewCertPool()
 	caCertPool.AppendCertsFromPEM(p.caCert)
 
@@ -277,14 +314,22 @@ func (p *PIAClient) executePIARequest(server Server, url, token string) (*http.R
 		},
 	}
 
+	// Execute the request
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
 
+	// Log the response body
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	resp.Body = io.NopCloser(bytes.NewReader(body))
+
 	// Return error if status code is not 200
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("status code %v", resp.StatusCode)
+		return nil, fmt.Errorf("status code %v, response body: %s", resp.StatusCode, string(body))
 	}
 
 	return resp, nil

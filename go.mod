@@ -1,6 +1,6 @@
-module github.com/kylegrantlucas/pia-wg-config
+module github.com/Ephemeral-Dust/pia-wg-config
 
-go 1.19
+go 1.21
 
 require (
 	github.com/benburkert/dns v0.0.0-20190225204957-d356cf78cdfc
