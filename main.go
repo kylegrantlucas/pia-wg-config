@@ -53,12 +53,6 @@ func defaultAction(c *cli.Context) error {
 	verbose := c.Bool("verbose")
 	serverName := c.Bool("server")
 
-	log.Printf("Username: %s\n", username)
-	log.Printf("Password: %s\n", password)
-	log.Printf("Region: %s\n", c.String("region"))
-	log.Printf("Verbose: %v\n", verbose)
-	log.Printf("Server: %v\n", serverName)
-
 	// create pia client
 	if verbose {
 		log.Print("Creating PIA client")

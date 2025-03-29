@@ -96,10 +96,8 @@ func NewPIAClient(username, password, region string, verbose bool) (*PIAClient, 
 // GetToken
 func (p *PIAClient) GetToken() (string, error) {
 	server := p.getMetadataServerForRegion()
-	log.Print("Getting token from server: ", server.Cn)
 
 	url := fmt.Sprintf("https://%v/authv3/generateToken", server.Cn)
-	log.Print("Requesting token from: ", url)
 
 	// Send request
 	resp, err := p.executePIARequest(server, url, "")
@@ -222,33 +220,25 @@ func (p *PIAClient) generateMetadataServerList(list piaServerList) ServerList {
 }
 
 func (p *PIAClient) executePIARequest(server Server, url, token string) (*http.Response, error) {
-	// Log the URL being requested
-	log.Printf("Request URL: %s", url)
-
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
-		log.Printf("Error creating request: %v", err)
 		return nil, err
 	}
 
 	// Set header to JSON
 	req.Header.Set("Content-Type", "application/json")
-	log.Printf("Request Headers: %v", req.Header)
 
 	// Set basic auth
 	if token == "" {
 		req.SetBasicAuth(p.username, p.password)
-		log.Printf("Using Basic Auth with username: %s", p.username)
-	} else {
-		log.Printf("Using token: %s", token)
 	}
 
 	// Add certificate to shared pool
 	err = p.downloadPIACertificate()
 	if err != nil {
-		log.Printf("Error downloading CA certificate: %v", err)
 		return nil, errors.Wrap(err, "error downloading ca certificate")
 	}
+
 	caCertPool := x509.NewCertPool()
 	caCertPool.AppendCertsFromPEM(p.caCert)
 
@@ -291,27 +281,17 @@ func (p *PIAClient) executePIARequest(server Server, url, token string) (*http.R
 		},
 	}
 
-	// Log the server details
-	log.Printf("Requesting server: %s (%s)", server.Cn, server.IP)
-
 	// Execute the request
 	resp, err := client.Do(req)
 	if err != nil {
-		log.Printf("Error executing request: %v", err)
 		return nil, err
 	}
-
-	// Log the response status and headers
-	log.Printf("Response Status: %s", resp.Status)
-	log.Printf("Response Headers: %v", resp.Header)
 
 	// Log the response body
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		log.Printf("Error reading response body: %v", err)
 		return nil, err
 	}
-	log.Printf("Response Body: %s", string(body))
 	resp.Body = io.NopCloser(bytes.NewReader(body))
 
 	// Return error if status code is not 200
