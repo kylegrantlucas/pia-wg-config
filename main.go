@@ -23,7 +23,7 @@ func main() {
 			&cli.StringFlag{
 				Name:    "region",
 				Aliases: []string{"r"},
-				Value:   "us_california",
+				Value:   "ca_toronto",
 				Usage:   "The private internet access region to connect to",
 			},
 			&cli.BoolFlag{
@@ -37,6 +37,12 @@ func main() {
 				Aliases: []string{"s"},
 				Value:   false,
 				Usage:   "Add Server common name to the config",
+			},
+			&cli.BoolFlag{
+				Name:    "port-forwarding",
+				Aliases: []string{"p"},
+				Value:   false,
+				Usage:   "Only get servers with port forwarding enabled",
 			},
 		},
 	}
@@ -52,12 +58,13 @@ func defaultAction(c *cli.Context) error {
 	password := c.Args().Get(1)
 	verbose := c.Bool("verbose")
 	serverName := c.Bool("server")
+	portForwarding := c.Bool("port-forwarding")
 
 	// create pia client
 	if verbose {
 		log.Print("Creating PIA client")
 	}
-	piaClient, err := pia.NewPIAClient(username, password, c.String("region"), verbose)
+	piaClient, err := pia.NewPIAClient(username, password, c.String("region"), verbose, portForwarding)
 	if err != nil {
 		return err
 	}

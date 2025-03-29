@@ -1,6 +1,11 @@
 This is a fork https://github.com/kylegrantlucas/pia-wg-config original script.
 
-I have updated it to use the latest PIA API and added the flag `--server, -s` which will add the server's common name to the config file. This is useful for adding it to Gluetun for port-forwarding.
+I have updated it to use the latest PIA server lists. In addition added the following flags:
+
+- `--server, -s` which will add the server's common name to the config file
+- `--port-fowarding, -p` which will force the script to only use servers that support port forwarding. I haven't edge-cased this yet, so providing a server that doesn't support port forwarding may cause the script to fail.
+
+This is useful for adding it to Gluetun for port-forwarding. Additionally changed default PIA region to ca_toronto as this region supports port forwarding.
 
 # pia-wg-config
 
