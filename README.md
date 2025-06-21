@@ -184,7 +184,7 @@ go test ./...
 
 ## 📋 Requirements
 
-- Go 1.19 or later (for building)
+- Go 1.23 or later (for building)
 - Active PIA subscription
 - Wireguard client (for using generated configs)
 

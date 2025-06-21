@@ -36,7 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Basic README documentation
 
 ### Technical Details
-- Built with Go 1.19+
+- Built with Go 1.23+
 - Uses PIA's official API endpoints
 - Self-contained binary with no external dependencies
 - Cross-platform compatibility
