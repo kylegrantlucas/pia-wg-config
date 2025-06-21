@@ -13,3 +13,49 @@
 
 # Dependency directories (remove the comment below to include it)
 # vendor/
+
+# Build artifacts
+pia-wg-config
+pia-wg-config-*
+dist/
+build/
+
+# Coverage reports
+coverage.out
+coverage.html
+*.cover
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+
+# Config files that might contain credentials
+*.conf
+wg*.conf
+test-configs/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Go workspace file
+go.work
+go.work.sum
