@@ -75,6 +75,16 @@ pia-wg-config -o wg0.conf -r de_frankfurt USERNAME PASSWORD
 
 # Enable verbose output
 pia-wg-config -v -r japan USERNAME PASSWORD
+
+# Use environment variables instead of positional arguments (useful in scripts)
+export PIAWGCONFIG_USER=myusername
+export PIAWGCONFIG_PW=mypassword
+pia-wg-config -r uk_london
+
+# Supply the PIA CA cert from a trusted local copy instead of downloading it at runtime.
+# Recommended for security-sensitive environments to eliminate the TOFU risk
+# of fetching the cert from GitHub on first use.
+pia-wg-config -c /path/to/pia-ca.crt -r uk_london USERNAME PASSWORD
 ```
 
 ## 📖 Command Reference
@@ -92,8 +102,13 @@ pia-wg-config [OPTIONS] USERNAME PASSWORD
 **Options:**
 - `-r, --region` - Region to connect to (default: "us_california")
 - `-o, --outfile` - Output file for the config (default: stdout)
+- `-c, --ca-cert` - Path to a locally-trusted PEM CA certificate file for verifying PIA's WireGuard API endpoint. When omitted, the cert is fetched from GitHub at runtime and verified against a pinned SHA-256 fingerprint — supply this flag to eliminate that runtime-download trust dependency in security-sensitive environments.
 - `-v, --verbose` - Enable verbose output
 - `-h, --help` - Show help
+
+**Environment variables (alternative to positional arguments):**
+- `PIAWGCONFIG_USER` - PIA username (overridden by positional `USERNAME` argument if both are supplied)
+- `PIAWGCONFIG_PW` - PIA password (overridden by positional `PASSWORD` argument if both are supplied)
 
 ### Subcommands
 

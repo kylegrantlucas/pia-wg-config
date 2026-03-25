@@ -4,16 +4,29 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"regexp"
 	"sort"
+	"strings"
 
 	"github.com/kylegrantlucas/pia-wg-config/pia"
 	cli "github.com/urfave/cli/v2"
 )
 
+// version is stamped at build time via: -ldflags "-X main.version=$(git describe --tags)"
+var version = "dev"
+
 func main() {
+	// urfave/cli registers -v as a short alias for --version by default, which
+	// conflicts with our -v/--verbose flag. Override to long-form only.
+	cli.VersionFlag = &cli.BoolFlag{Name: "version", Usage: "print the version"}
+
 	app := &cli.App{
-		Name:   "pia-wg-config",
-		Usage:  "generate a wireguard config for private internet access",
+		Name:    "pia-wg-config",
+		Version: version,
+		Usage:   "generate a wireguard config for private internet access",
+		Description: "Credentials can be supplied as positional arguments (USERNAME PASSWORD) or via\n" +
+			"the PIAWGCONFIG_USER and PIAWGCONFIG_PW environment variables (recommended).\n" +
+			"Environment variables take priority over positional arguments.",
 		Action: defaultAction,
 
 		Commands: []*cli.Command{
@@ -29,19 +42,24 @@ func main() {
 			&cli.StringFlag{
 				Name:    "outfile",
 				Aliases: []string{"o"},
-				Usage:   "The file to write the wireguard config to",
+				Usage:   "Write the Wireguard config to `FILE`. If omitted, the config is printed to stdout.",
 			},
 			&cli.StringFlag{
 				Name:    "region",
 				Aliases: []string{"r"},
 				Value:   "us_california",
-				Usage:   "The private internet access region to connect to (use 'regions' command to list all available regions)",
+				Usage:   "Private Internet Access region to connect to (use 'regions' command to list all available regions)",
 			},
 			&cli.BoolFlag{
 				Name:    "verbose",
 				Aliases: []string{"v"},
 				Value:   false,
 				Usage:   "Print verbose output",
+			},
+			&cli.StringFlag{
+				Name:    "ca-cert",
+				Aliases: []string{"c"},
+				Usage:   "Path to a locally-trusted PIA ca cert pem `FILE`. If omitted, the cert is fetched from GitHub and verified against a pinned SHA-256 fingerprint.",
 			},
 		},
 	}
@@ -52,38 +70,57 @@ func main() {
 }
 
 func defaultAction(c *cli.Context) error {
-	// Validate arguments
-	if c.NArg() < 2 {
-		fmt.Println("Error: Username and password are required")
+	// Credentials: env vars take priority, positional args are fallback.
+	username := os.Getenv("PIAWGCONFIG_USER")
+	if username == "" {
+		username = c.Args().Get(0)
+	}
+	password := os.Getenv("PIAWGCONFIG_PW")
+	if password == "" {
+		password = c.Args().Get(1)
+	}
+
+	if username == "" || password == "" {
+		fmt.Println("Error: PIA username and password are required but were not provided.")
 		fmt.Println()
-		fmt.Println("Usage:")
+		fmt.Println("Provide credentials via environment variables (recommended):")
+		fmt.Println("  PIAWGCONFIG_USER=user PIAWGCONFIG_PW=pass pia-wg-config [OPTIONS]")
+		fmt.Println()
+		fmt.Println("Or as positional arguments:")
 		fmt.Println("  pia-wg-config [OPTIONS] USERNAME PASSWORD")
 		fmt.Println()
 		fmt.Println("Examples:")
 		fmt.Println("  pia-wg-config myuser mypass")
-		fmt.Println("  pia-wg-config -r uk_london myuser mypass")
-		fmt.Println("  pia-wg-config -o config.conf -r de_frankfurt myuser mypass")
+		fmt.Println("  PIAWGCONFIG_USER=alice PIAWGCONFIG_PW=secret pia-wg-config -r uk_london")
+		fmt.Println("  pia-wg-config -r de_frankfurt -o config.conf myuser mypass")
 		fmt.Println()
 		fmt.Println("To see available regions:")
 		fmt.Println("  pia-wg-config regions")
 		return cli.Exit("", 1)
 	}
 
-	// get username and password
-	username := c.Args().Get(0)
-	password := c.Args().Get(1)
+	// PIA usernames are always 'p' followed by digits (e.g. p1234567).
+	// Normalise to lowercase first so 'P1234567' is also accepted.
+	// Validated against PIA's own tooling: https://github.com/pia-foss/manual-connections
+	username = strings.ToLower(username)
+	if !regexp.MustCompile(`^p\d+$`).MatchString(username) {
+		fmt.Println("Error: PIA username must start with 'p' followed by digits (e.g. p1234567).")
+		return cli.Exit("", 1)
+	}
+
 	verbose := c.Bool("verbose")
 	region := c.String("region")
-
-	if username == "" || password == "" {
-		return cli.Exit("Error: Username and password cannot be empty", 1)
-	}
+	caCertPath := c.String("ca-cert")
 
 	// create pia client
 	if verbose {
-		log.Printf("Creating PIA client for region: %s", region)
+		if c.IsSet("region") {
+			log.Printf("Region: %s (user-specified)", region)
+		} else {
+			log.Printf("Region: %s (default; use --region to override)", region)
+		}
 	}
-	piaClient, err := pia.NewPIAClient(username, password, region, verbose)
+	piaClient, err := pia.NewPIAClient(username, password, region, caCertPath, verbose)
 	if err != nil {
 		if verbose {
 			log.Printf("Failed to create PIA client: %v", err)
@@ -145,8 +182,8 @@ func defaultAction(c *cli.Context) error {
 func listRegions(c *cli.Context) error {
 	fmt.Println("Fetching available regions from PIA...")
 
-	// Create a dummy client just to get the server list
-	piaClient, err := pia.NewPIAClient("", "", "us_california", false)
+	// Create a dummy client just to get the server list (no credentials or CA cert required)
+	piaClient, err := pia.NewPIAClient("", "", "us_california", "", false)
 	if err != nil {
 		return fmt.Errorf("failed to fetch regions: %v", err)
 	}

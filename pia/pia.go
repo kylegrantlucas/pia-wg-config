@@ -2,22 +2,46 @@ package pia
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/benburkert/dns"
 	"github.com/pkg/errors"
 )
+
+// piaCACertFingerprintSHA256 is the expected SHA-256 fingerprint (lowercase hex, no colons) of
+// the PIA RSA-4096 CA certificate's DER encoding. This guards against a TOFU/MITM attack on
+// the auto-download path by refusing to use a cert that doesn't match this value.
+//
+// To compute it from a trusted copy of the certificate:
+//
+//	curl -s https://raw.githubusercontent.com/pia-foss/desktop/master/daemon/res/ca/rsa_4096.crt \
+//	  | openssl x509 -noout -fingerprint -sha256 \
+//	  | sed 's/.*=//;s/://g' | tr 'A-F' 'a-f'
+//
+// Cross-verify the result against PIA's official open-source repository:
+// https://github.com/pia-foss/desktop/blob/master/daemon/res/ca/rsa_4096.crt
+//
+// Leave this empty to disable the auto-download path entirely and require --ca-cert.
+// This 1fd2... value was correct as of 25 March 2026
+const piaCACertFingerprintSHA256 = "1fd25658456eab3041fba77ccd398ab8124edcc1b8b2fc1d55fdf6b1bbfc9d70"
+
+// productionTokenURL is the PIA central API endpoint used to obtain authentication tokens.
+// It works with all PIA server generations, including the new Server-XXXXX-0a format.
+const productionTokenURL = "https://www.privateinternetaccess.com/api/client/v2/token"
 
 type PIAWgClient interface {
 	GetToken() (string, error)
@@ -30,11 +54,16 @@ type ServerList map[Region][]Server
 type PIAClient struct {
 	region           string
 	wireguardServers ServerList
-	metadataServers  ServerList
 	username         string
 	password         string
 	verbose          bool
 	caCert           []byte
+	// caCertPath is the path to a local CA cert file. When non-empty it is used
+	// in preference to the auto-download path, bypassing any network fetch.
+	caCertPath string
+	// tokenURL overrides productionTokenURL. Empty means use productionTokenURL.
+	// This field exists solely to allow unit tests to point GetToken() at a local httptest server.
+	tokenURL string
 }
 
 type piaServerList struct {
@@ -47,8 +76,7 @@ type piaServerList struct {
 		PortForward bool   `json:"port_forward"`
 		Geo         bool   `json:"geo"`
 		Servers     struct {
-			Meta []Server `json:"meta"`
-			Wg   []Server `json:"wg"`
+			Wg []Server `json:"wg"`
 		} `json:"servers"`
 	} `json:"regions"`
 }
@@ -69,13 +97,16 @@ type Server struct {
 	IP string
 }
 
-// NewPIAClient creates a new PIA client for with the list of servers populated
-func NewPIAClient(username, password, region string, verbose bool) (*PIAClient, error) {
+// NewPIAClient creates a new PIA client for with the list of servers populated.
+// caCertPath may be empty, in which case the CA cert is downloaded from PIA's GitHub
+// repository and verified against the piaCACertFingerprintSHA256 constant.
+func NewPIAClient(username, password, region, caCertPath string, verbose bool) (*PIAClient, error) {
 	piaClient := PIAClient{
-		username: username,
-		password: password,
-		region:   region,
-		verbose:  verbose,
+		username:   username,
+		password:   password,
+		region:     region,
+		verbose:    verbose,
+		caCertPath: caCertPath,
 	}
 
 	// Get list of servers
@@ -85,7 +116,6 @@ func NewPIAClient(username, password, region string, verbose bool) (*PIAClient, 
 	}
 
 	// Set servers
-	piaClient.metadataServers = piaClient.generateMetadataServerList(serverList)
 	piaClient.wireguardServers = piaClient.generateWireguardServerList(serverList)
 
 	// Validate region exists
@@ -97,32 +127,60 @@ func NewPIAClient(username, password, region string, verbose bool) (*PIAClient, 
 		return nil, fmt.Errorf("region '%s' not found. Available regions: %v. Use 'pia-wg-config regions' to see all available regions", region, availableRegions[:5]) // Show first 5 as example
 	}
 
+	// Pre-load the CA certificate so we fail fast if the supplied path is invalid.
+	// This is also a no-op cache warm-up on the auto-download path.
+	if err := piaClient.downloadPIACertificate(); err != nil {
+		return nil, errors.Wrap(err, "loading PIA CA certificate")
+	}
+
 	return &piaClient, nil
 }
 
-// GetToken
+// GetToken fetches an authentication token from PIA's central API.
+// The central endpoint works with all server generations, including the new
+// Server-XXXXX-0a format whose regional meta servers do not respond to
+// the old /authv3/generateToken endpoint.
 func (p *PIAClient) GetToken() (string, error) {
-	server := p.getMetadataServerForRegion()
-	url := fmt.Sprintf("https://%v/authv3/generateToken", server.Cn)
-
-	// Send request
-	resp, err := p.executePIARequest(server, url, "")
-	if err != nil {
-		return "", errors.Wrap(err, "error executing request")
-	}
-
-	// Parse response
-	var tokenResp struct {
-		Token string `json:"token"`
-	}
-
-	err = json.NewDecoder(resp.Body).Decode(&tokenResp)
-	if err != nil {
-		return "", errors.Wrap(err, "error decoding token response")
+	endpoint := productionTokenURL
+	if p.tokenURL != "" {
+		endpoint = p.tokenURL
 	}
 
 	if p.verbose {
-		log.Print("Got token: ", tokenResp.Token)
+		log.Print("Requesting token from PIA central API")
+	}
+
+	httpClient := &http.Client{Timeout: 30 * time.Second}
+	resp, err := httpClient.PostForm(endpoint, url.Values{
+		"username": {p.username},
+		"password": {p.password},
+	})
+	if err != nil {
+		return "", errors.Wrap(err, "requesting token from PIA API")
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	if err != nil {
+		return "", errors.Wrap(err, "reading token response body")
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("token request failed with status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var tokenResp struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(body, &tokenResp); err != nil {
+		return "", errors.Wrap(err, "decoding token response")
+	}
+	if tokenResp.Token == "" {
+		return "", errors.New("received empty token from PIA API")
+	}
+
+	if p.verbose {
+		log.Printf("Got token: %d bytes", len(tokenResp.Token))
 	}
 
 	return tokenResp.Token, nil
@@ -152,7 +210,7 @@ func (p *PIAClient) AddKey(token, publickey string) (AddKeyResult, error) {
 	url := fmt.Sprintf("https://%v:1337/addKey?pt=%v&pubkey=%v", server.Cn, url.QueryEscape(token), url.QueryEscape(publickey))
 
 	// Send request
-	resp, err := p.executePIARequest(server, url, token)
+	resp, err := p.executePIARequest(server, url)
 	if err != nil {
 		return addKeyResp, errors.Wrap(err, "error executing request")
 	}
@@ -173,17 +231,6 @@ func (p *PIAClient) getWireguardServerForRegion() Server {
 	servers := p.wireguardServers[Region(p.region)]
 	if len(servers) == 0 {
 		log.Fatalf("No Wireguard servers available for region: %s", p.region)
-	}
-	return servers[0]
-}
-
-func (p *PIAClient) getMetadataServerForRegion() Server {
-	if p.verbose {
-		log.Print("Getting metadata server for region: ", p.region)
-	}
-	servers := p.metadataServers[Region(p.region)]
-	if len(servers) == 0 {
-		log.Fatalf("No metadata servers available for region: %s", p.region)
 	}
 	return servers[0]
 }
@@ -232,23 +279,7 @@ func (p *PIAClient) generateWireguardServerList(list piaServerList) ServerList {
 	return servers
 }
 
-// generateMetadataServerList
-func (p *PIAClient) generateMetadataServerList(list piaServerList) ServerList {
-	servers := ServerList{}
-
-	for _, r := range list.Regions {
-		for _, server := range r.Servers.Meta {
-			servers[Region(r.ID)] = append(servers[Region(r.ID)], Server{
-				Cn: server.Cn,
-				IP: server.IP,
-			})
-		}
-	}
-
-	return servers
-}
-
-func (p *PIAClient) executePIARequest(server Server, url, token string) (*http.Response, error) {
+func (p *PIAClient) executePIARequest(server Server, url string) (*http.Response, error) {
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return nil, err
@@ -256,11 +287,6 @@ func (p *PIAClient) executePIARequest(server Server, url, token string) (*http.R
 
 	// Set header to JSON
 	req.Header.Set("Content-Type", "application/json")
-
-	// Set basic auth
-	if token == "" {
-		req.SetBasicAuth(p.username, p.password)
-	}
 
 	// Add certificate to shared pool
 	err = p.downloadPIACertificate()
@@ -322,24 +348,90 @@ func (p *PIAClient) executePIARequest(server Server, url, token string) (*http.R
 	return resp, nil
 }
 
-// downloadPIACertificate downloads the PIA certificate
+// downloadPIACertificate loads the PIA CA certificate.
+//
+// If PIAClient.caCertPath is set, the cert is read from that file — the caller is
+// responsible for obtaining and trusting the file.
+//
+// Otherwise the cert is fetched from PIA's GitHub repository. The download is
+// rejected unless piaCACertFingerprintSHA256 is non-empty AND the SHA-256
+// fingerprint of the fetched cert's DER encoding matches it exactly. This
+// prevents a MITM attacker from substituting a rogue CA cert.
 func (p *PIAClient) downloadPIACertificate() error {
 	// caCert already loaded
 	if len(p.caCert) > 0 {
+		if p.verbose {
+			log.Print("CA cert already loaded, skipping download")
+		}
 		return nil
 	}
 
-	// Download certificate
-	resp, err := http.Get("https://raw.githubusercontent.com/pia-foss/desktop/master/daemon/res/ca/rsa_4096.crt")
-	if err != nil {
-		return err
+	// Prefer a locally-provided cert file over the network download.
+	if p.caCertPath != "" {
+		data, err := os.ReadFile(p.caCertPath)
+		if err != nil {
+			return fmt.Errorf("reading CA cert from %s: %w", p.caCertPath, err)
+		}
+		p.caCert = data
+		if p.verbose {
+			log.Printf("Loaded CA cert from file: %d bytes", len(data))
+		}
+		return nil
 	}
 
-	// Parse certificate
-	p.caCert, err = ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return err
+	// Auto-download requires a pinned fingerprint to prevent TOFU attacks.
+	if piaCACertFingerprintSHA256 == "" {
+		return errors.New(
+			"CA cert fingerprint not configured: either supply --ca-cert <path> with a " +
+				"locally-trusted cert, or set piaCACertFingerprintSHA256 in pia/pia.go " +
+				"after verifying the value with the instructions in that file",
+		)
 	}
 
+	// Download certificate with a timeout.
+	httpClient := &http.Client{Timeout: 30 * time.Second}
+	resp, err := httpClient.Get("https://raw.githubusercontent.com/pia-foss/desktop/master/daemon/res/ca/rsa_4096.crt")
+	if err != nil {
+		return fmt.Errorf("downloading PIA CA cert: %w", err)
+	}
+	defer resp.Body.Close()
+
+	rawPEM, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024)) // 64 KiB is ample for any cert
+	if err != nil {
+		return fmt.Errorf("reading PIA CA cert body: %w", err)
+	}
+	if p.verbose {
+		log.Printf("Downloaded CA cert: %d bytes", len(rawPEM))
+	}
+
+	// Parse to DER so we can fingerprint the canonical encoding, not the PEM bytes.
+	pemBlock, _ := pem.Decode(rawPEM)
+	if pemBlock == nil {
+		return errors.New("PIA CA cert download: no PEM block found")
+	}
+	cert, err := x509.ParseCertificate(pemBlock.Bytes)
+	if err != nil {
+		return fmt.Errorf("PIA CA cert download: parsing certificate: %w", err)
+	}
+
+	// Verify fingerprint against the pinned constant.
+	fingerprint := sha256.Sum256(cert.Raw)
+	got := hex.EncodeToString(fingerprint[:])
+	if p.verbose {
+		log.Printf("CA cert fingerprint (SHA-256): %s", got)
+		log.Printf("CA cert subject: %s", cert.Subject)
+		log.Printf("CA cert expires: %s", cert.NotAfter.Format("2006-01-02"))
+	}
+	if got != piaCACertFingerprintSHA256 {
+		return fmt.Errorf(
+			"PIA CA cert fingerprint mismatch: pinned=%s got=%s — aborting to prevent MITM",
+			piaCACertFingerprintSHA256, got,
+		)
+	}
+	if p.verbose {
+		log.Print("CA cert fingerprint verified OK")
+	}
+
+	p.caCert = rawPEM
 	return nil
 }
