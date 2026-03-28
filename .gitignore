@@ -50,12 +50,17 @@ Thumbs.db
 *.conf
 wg*.conf
 test-configs/
+opencode.json
+!pia-wg-template.conf
 
 # Environment files
-.env
+*.env
 .env.local
 .env.*.local
 
 # Go workspace file
 go.work
 go.work.sum
+
+# Git files
+.gitignore

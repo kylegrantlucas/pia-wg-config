@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/kylegrantlucas/pia-wg-config/pia"
 	cli "github.com/urfave/cli/v2"
@@ -36,6 +38,11 @@ func main() {
 				Aliases: []string{"r"},
 				Value:   "us_california",
 				Usage:   "The private internet access region to connect to (use 'regions' command to list all available regions)",
+			},
+			&cli.StringFlag{
+				Name:    "wg-template",
+				Aliases: []string{"t"},
+				Usage:   "Path to a custom WireGuard template file (defaults to bundled template)",
 			},
 			&cli.BoolFlag{
 				Name:    "verbose",
@@ -102,7 +109,7 @@ func defaultAction(c *cli.Context) error {
 	if verbose {
 		log.Print("creating wg config generator")
 	}
-	wgConfigGenerator := pia.NewPIAWgGenerator(piaClient, pia.PIAWgGeneratorConfig{Verbose: verbose})
+	wgConfigGenerator := pia.NewPIAWgGenerator(piaClient, pia.PIAWgGeneratorConfig{Verbose: verbose, TemplatePath: c.String("wg-template")})
 
 	// generate wg config
 	if verbose {
@@ -122,7 +129,29 @@ func defaultAction(c *cli.Context) error {
 		return cli.Exit("", 1)
 	}
 
+	// Generate env file with token, gateway IP and hostname
+	token, err := piaClient.GetToken()
+	if err != nil {
+		return cli.Exit("Error: failed to obtain PIA token", 1)
+	}
+	wgSrv := piaClient.WireguardServer()
+	var envFile string
 	outfile := c.String("outfile")
+	if outfile != "" {
+		base := strings.TrimSuffix(outfile, filepath.Ext(outfile))
+		envFile = base + ".env"
+	} else {
+		envFile = "pia_env.env"
+	}
+	envContent := fmt.Sprintf("PIA_TOKEN=%s\nPF_GATEWAY=%s\nPF_HOSTNAME=%s\n", token, wgSrv.IP, wgSrv.Cn)
+	if err := os.WriteFile(envFile, []byte(envContent), 0644); err != nil {
+		return cli.Exit(fmt.Sprintf("Error: could not write env file '%s': %v", envFile, err), 1)
+	}
+	if verbose {
+		log.Printf("PIA info written to: %s", envFile)
+	}
+	fmt.Printf("✓ PIA info file generated: %s\n", envFile)
+
 	if outfile != "" {
 		// write config to file
 		err = os.WriteFile(outfile, []byte(config), 0600) // More secure permissions

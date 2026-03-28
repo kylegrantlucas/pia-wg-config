@@ -13,7 +13,6 @@ A client can handle queries for a net.Dialer:
 
 	conn, err := dialer.DialContext(ctx, "tcp", "example.com:80")
 
-
 It can also query a remote DNS server directly:
 
 	client := new(dns.Client)
@@ -71,6 +70,5 @@ A handler answers queries for a server or a local resolver for a client:
 	}
 
 	addrs, err := net.LookupHost("alpha.localhost")
-
 */
 package dns

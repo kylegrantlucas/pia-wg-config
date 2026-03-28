@@ -58,7 +58,7 @@ source ~/.zshenv
 ### Install pia-wg-config
 
 ```bash
-go install github.com/kylegrantlucas/pia-wg-config@latest
+go install github.com/mowley-bob/pia-wg-config@latest
 ```
 
 ### Basic Usage
@@ -94,6 +94,12 @@ pia-wg-config [OPTIONS] USERNAME PASSWORD
 - `-o, --outfile` - Output file for the config (default: stdout)
 - `-v, --verbose` - Enable verbose output
 - `-h, --help` - Show help
+
+**pia-wg-template.conf**
+- `pia-wg-template.conf` - WireGuard config template file.
+
+If the file pia-wg-template.conf is present in the same directory as the binary use this for generating
+the wireguard.conf 
 
 ### Subcommands
 
@@ -166,7 +172,7 @@ ENTRYPOINT ["pia-wg-config"]
 ## 🏗️ Building from Source
 
 ```bash
-git clone https://github.com/kylegrantlucas/pia-wg-config
+git clone https://github.com/mowley-bob/pia-wg-config
 cd pia-wg-config
 go build -o pia-wg-config .
 ```
@@ -192,7 +198,7 @@ go build -o pia-wg-config .
 
 ### Getting Help
 
-1. Check the [Issues](https://github.com/kylegrantlucas/pia-wg-config/issues) page
+1. Check the [Issues](https://github.com/mowley-bob/pia-wg-config/issues) page
 2. Run with `-v` flag for detailed output
 3. Verify your PIA account is active
 
@@ -202,7 +208,7 @@ Contributions are welcome! Please feel free to submit a Pull Request. For major 
 
 ### Development Setup
 ```bash
-git clone https://github.com/kylegrantlucas/pia-wg-config
+git clone https://github.com/mowley-bob/pia-wg-config
 cd pia-wg-config
 go mod download
 go test ./...
