@@ -30,7 +30,6 @@ type ServerList map[Region][]Server
 type PIAClient struct {
 	region           string
 	wireguardServers ServerList
-	metadataServers  ServerList
 	username         string
 	password         string
 	verbose          bool
@@ -85,7 +84,6 @@ func NewPIAClient(username, password, region string, verbose bool) (*PIAClient, 
 	}
 
 	// Set servers
-	piaClient.metadataServers = piaClient.generateMetadataServerList(serverList)
 	piaClient.wireguardServers = piaClient.generateWireguardServerList(serverList)
 
 	// Validate region exists
@@ -100,29 +98,37 @@ func NewPIAClient(username, password, region string, verbose bool) (*PIAClient, 
 	return &piaClient, nil
 }
 
+// tokenURL is PIA's central token API (the same endpoint used by PIA's
+// manual-connections scripts). Regional metadata servers no longer serve
+// /authv3/generateToken reliably (issues #12, #17).
+const tokenURL = "https://www.privateinternetaccess.com/api/client/v2/token"
+
 // GetToken
 func (p *PIAClient) GetToken() (string, error) {
-	server := p.getMetadataServerForRegion()
-	url := fmt.Sprintf("https://%v/authv3/generateToken", server.Cn)
-
-	// Send request
-	resp, err := p.executePIARequest(server, url, "")
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.PostForm(tokenURL, url.Values{
+		"username": {p.username},
+		"password": {p.password},
+	})
 	if err != nil {
 		return "", errors.Wrap(err, "error executing request")
 	}
-
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("token request failed: %s", resp.Status)
+	}
 	// Parse response
 	var tokenResp struct {
 		Token string `json:"token"`
 	}
 
-	err = json.NewDecoder(resp.Body).Decode(&tokenResp)
+	err = json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&tokenResp)
 	if err != nil {
 		return "", errors.Wrap(err, "error decoding token response")
 	}
 
 	if p.verbose {
-		log.Print("Got token: ", tokenResp.Token)
+		log.Print("Got token")
 	}
 
 	return tokenResp.Token, nil
@@ -177,17 +183,6 @@ func (p *PIAClient) getWireguardServerForRegion() Server {
 	return servers[0]
 }
 
-func (p *PIAClient) getMetadataServerForRegion() Server {
-	if p.verbose {
-		log.Print("Getting metadata server for region: ", p.region)
-	}
-	servers := p.metadataServers[Region(p.region)]
-	if len(servers) == 0 {
-		log.Fatalf("No metadata servers available for region: %s", p.region)
-	}
-	return servers[0]
-}
-
 // getSeverList returns a list of servers from the PIA API
 func (p *PIAClient) getServerList() (piaServerList, error) {
 	var serverList piaServerList
@@ -222,22 +217,6 @@ func (p *PIAClient) generateWireguardServerList(list piaServerList) ServerList {
 
 	for _, r := range list.Regions {
 		for _, server := range r.Servers.Wg {
-			servers[Region(r.ID)] = append(servers[Region(r.ID)], Server{
-				Cn: server.Cn,
-				IP: server.IP,
-			})
-		}
-	}
-
-	return servers
-}
-
-// generateMetadataServerList
-func (p *PIAClient) generateMetadataServerList(list piaServerList) ServerList {
-	servers := ServerList{}
-
-	for _, r := range list.Regions {
-		for _, server := range r.Servers.Meta {
 			servers[Region(r.ID)] = append(servers[Region(r.ID)], Server{
 				Cn: server.Cn,
 				IP: server.IP,

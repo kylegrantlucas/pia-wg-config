@@ -210,7 +210,7 @@ go test ./...
 
 ## 📋 Requirements
 
-- Go 1.23 or later (for building)
+- Go 1.27 or later (for building; older Go fails with a `go.mod requires go >= 1.27` error — upgrade Go or set `GOTOOLCHAIN=auto`)
 - Active PIA subscription
 - Wireguard client (for using generated configs)
 
