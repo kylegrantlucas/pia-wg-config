@@ -1,167 +1,105 @@
 package main
 
 import (
+	"context"
+	"errors"
+	"flag"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
-	"sort"
+	"os/signal"
+	"slices"
+	"syscall"
+	"time"
 
 	"github.com/kylegrantlucas/pia-wg-config/pia"
-	cli "github.com/urfave/cli/v2"
+)
+
+var (
+	version = "dev"
+	logger  *slog.Logger
 )
 
 func main() {
-	app := &cli.App{
-		Name:   "pia-wg-config",
-		Usage:  "generate a wireguard config for private internet access",
-		Action: defaultAction,
+	// Set up context with cancellation
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
 
-		Commands: []*cli.Command{
-			{
-				Name:    "regions",
-				Aliases: []string{"r"},
-				Usage:   "List all available PIA regions",
-				Action:  listRegions,
-			},
-		},
+	// Set up structured logging with default level
+	logger = slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+	}))
 
-		Flags: []cli.Flag{
-			&cli.StringFlag{
-				Name:    "outfile",
-				Aliases: []string{"o"},
-				Usage:   "The file to write the wireguard config to",
-			},
-			&cli.StringFlag{
-				Name:    "region",
-				Aliases: []string{"r"},
-				Value:   "us_california",
-				Usage:   "The private internet access region to connect to (use 'regions' command to list all available regions)",
-			},
-			&cli.BoolFlag{
-				Name:    "verbose",
-				Aliases: []string{"v"},
-				Value:   false,
-				Usage:   "Print verbose output",
-			},
-		},
-	}
-
-	if err := app.Run(os.Args); err != nil {
-		log.Fatal(err)
+	// Parse command line arguments
+	if err := run(ctx, os.Args[1:]); err != nil {
+		logger.Error("Application error", "error", err)
+		os.Exit(1)
 	}
 }
 
-func defaultAction(c *cli.Context) error {
-	// Validate arguments
-	if c.NArg() < 2 {
-		fmt.Println("Error: Username and password are required")
-		fmt.Println()
-		fmt.Println("Usage:")
-		fmt.Println("  pia-wg-config [OPTIONS] USERNAME PASSWORD")
-		fmt.Println()
-		fmt.Println("Examples:")
-		fmt.Println("  pia-wg-config myuser mypass")
-		fmt.Println("  pia-wg-config -r uk_london myuser mypass")
-		fmt.Println("  pia-wg-config -o config.conf -r de_frankfurt myuser mypass")
-		fmt.Println()
-		fmt.Println("To see available regions:")
-		fmt.Println("  pia-wg-config regions")
-		return cli.Exit("", 1)
+func run(ctx context.Context, args []string) error {
+	// Handle version flag early
+	if len(args) > 0 && (args[0] == "--version" || args[0] == "-v") {
+		fmt.Printf("pia-wg-config version %s\n", version)
+		return nil
 	}
 
-	// get username and password
-	username := c.Args().Get(0)
-	password := c.Args().Get(1)
-	verbose := c.Bool("verbose")
-	region := c.String("region")
-
-	if username == "" || password == "" {
-		return cli.Exit("Error: Username and password cannot be empty", 1)
+	// Handle help flag early
+	if len(args) > 0 && (args[0] == "--help" || args[0] == "-h") {
+		printUsage()
+		return nil
 	}
 
-	// create pia client
-	if verbose {
-		log.Printf("Creating PIA client for region: %s", region)
-	}
-	piaClient, err := pia.NewPIAClient(username, password, region, verbose)
-	if err != nil {
-		if verbose {
-			log.Printf("Failed to create PIA client: %v", err)
-		}
-		fmt.Printf("Error: Failed to connect to PIA servers\n")
-		fmt.Printf("This could be due to:\n")
-		fmt.Printf("  - Invalid username or password\n")
-		fmt.Printf("  - Invalid region '%s' (run 'pia-wg-config regions' to see available regions)\n", region)
-		fmt.Printf("  - Network connectivity issues\n")
-		fmt.Printf("  - PIA service unavailable\n")
-		fmt.Printf("\nTry running with -v flag for more details\n")
-		return cli.Exit("", 1)
+	// Handle regions command
+	if len(args) > 0 && args[0] == "regions" {
+		return handleRegionsCommand(ctx, args[1:])
 	}
 
-	// create wg config generator
-	if verbose {
-		log.Print("creating wg config generator")
-	}
-	wgConfigGenerator := pia.NewPIAWgGenerator(piaClient, pia.PIAWgGeneratorConfig{Verbose: verbose})
-
-	// generate wg config
-	if verbose {
-		log.Print("Generating wireguard config")
-	}
-	config, err := wgConfigGenerator.Generate()
-	if err != nil {
-		if verbose {
-			log.Printf("Failed to generate config: %v", err)
-		}
-		fmt.Printf("Error: Failed to generate Wireguard configuration\n")
-		fmt.Printf("This could be due to:\n")
-		fmt.Printf("  - Authentication failure (check your PIA credentials)\n")
-		fmt.Printf("  - Server communication issues\n")
-		fmt.Printf("  - Region server unavailable\n")
-		fmt.Printf("\nTry running with -v flag for more details\n")
-		return cli.Exit("", 1)
-	}
-
-	outfile := c.String("outfile")
-	if outfile != "" {
-		// write config to file
-		err = os.WriteFile(outfile, []byte(config), 0600) // More secure permissions
-		if err != nil {
-			return cli.Exit(fmt.Sprintf("Error: Failed to write config to file '%s': %v", outfile, err), 1)
-		}
-		if verbose {
-			log.Printf("Wireguard config written to: %s", outfile)
-		}
-		fmt.Printf("✓ Wireguard config generated successfully: %s\n", outfile)
-		fmt.Printf("You can now connect using: sudo wg-quick up %s\n", outfile)
-	} else {
-		// print config to stdout
-		fmt.Println(config)
-	}
-
-	return nil
+	// Handle main command (config generation)
+	return handleGenerateCommand(ctx, args)
 }
 
-func listRegions(c *cli.Context) error {
+func handleRegionsCommand(ctx context.Context, args []string) error {
+	// Parse regions command flags
+	fs := flag.NewFlagSet("regions", flag.ContinueOnError)
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: pia-wg-config regions [options]\n")
+		fmt.Fprintf(os.Stderr, "\nOptions:\n")
+		fs.PrintDefaults()
+	}
+
+	timeout := fs.Duration("timeout", 30*time.Second, "Timeout for PIA API requests")
+	help := fs.Bool("help", false, "Show help")
+
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
+		return err
+	}
+
+	if *help {
+		fs.Usage()
+		return nil
+	}
+
 	fmt.Println("Fetching available regions from PIA...")
 
-	// Create a dummy client just to get the server list
-	piaClient, err := pia.NewPIAClient("", "", "us_california", false)
-	if err != nil {
-		return fmt.Errorf("failed to fetch regions: %v", err)
-	}
+	ctx, cancel := context.WithTimeout(ctx, *timeout)
+	defer cancel()
 
-	regions, err := piaClient.GetAvailableRegions()
+	// Fetch regions
+	regions, err := pia.GetAvailableRegions(ctx, logger)
 	if err != nil {
-		return fmt.Errorf("failed to get regions: %v", err)
+		return fmt.Errorf("failed to fetch regions: %w", err)
 	}
 
 	// Sort regions for consistent output
-	var regionList []string
+	regionList := make([]string, 0, len(regions))
 	for region := range regions {
 		regionList = append(regionList, string(region))
 	}
-	sort.Strings(regionList)
+	slices.Sort(regionList)
 
 	fmt.Println("\nAvailable PIA regions:")
 	fmt.Println("======================")
@@ -173,4 +111,177 @@ func listRegions(c *cli.Context) error {
 	fmt.Println("  pia-wg-config -r uk_london USERNAME PASSWORD")
 
 	return nil
+}
+
+func handleGenerateCommand(ctx context.Context, args []string) error {
+	// Parse main command flags
+	fs := flag.NewFlagSet("pia-wg-config", flag.ContinueOnError)
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: pia-wg-config [options] USERNAME PASSWORD\n")
+		fmt.Fprintf(os.Stderr, "\nGenerate a Wireguard config for Private Internet Access\n")
+		fmt.Fprintf(os.Stderr, "\nOptions:\n")
+		fs.PrintDefaults()
+		fmt.Fprintf(os.Stderr, "\nExamples:\n")
+		fmt.Fprintf(os.Stderr, "  pia-wg-config myuser mypass\n")
+		fmt.Fprintf(os.Stderr, "  pia-wg-config -r uk_london myuser mypass\n")
+		fmt.Fprintf(os.Stderr, "  pia-wg-config -o config.conf -r de_frankfurt myuser mypass\n")
+		fmt.Fprintf(os.Stderr, "\nTo see available regions:\n")
+		fmt.Fprintf(os.Stderr, "  pia-wg-config regions\n")
+	}
+
+	outfile := fs.String("o", "", "Output file for the config (default: stdout)")
+	region := fs.String("r", "us_california", "PIA region to connect to")
+	verbose := fs.Bool("verbose", false, "Enable verbose output with structured logging")
+	timeout := fs.Duration("timeout", 30*time.Second, "Timeout for PIA API requests")
+	help := fs.Bool("help", false, "Show help")
+
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
+		return err
+	}
+
+	if *help {
+		fs.Usage()
+		return nil
+	}
+
+	// Update logger if verbose
+	if *verbose {
+		logger = slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+			Level: slog.LevelDebug,
+		}))
+	}
+
+	// Validate arguments
+	if fs.NArg() < 2 {
+		fmt.Fprintf(os.Stderr, "Error: Username and password are required\n\n")
+		fs.Usage()
+		return fmt.Errorf("missing required arguments")
+	}
+
+	username := fs.Arg(0)
+	password := fs.Arg(1)
+
+	if username == "" || password == "" {
+		return fmt.Errorf("username and password cannot be empty")
+	}
+
+	logger.Debug("Starting config generation",
+		"region", *region,
+		"timeout", *timeout,
+	)
+
+	// Create context with timeout
+	ctx, cancel := context.WithTimeout(ctx, *timeout)
+	defer cancel()
+
+	// Create PIA client
+	piaClient, err := pia.NewPIAClient(ctx, username, password, *region, logger)
+	if err != nil {
+		return handlePIAError(err, *region)
+	}
+
+	// Generate config
+	config, err := piaClient.GenerateConfig(ctx)
+	if err != nil {
+		return handleConfigGenerationError(err)
+	}
+
+	// Output config
+	return outputConfig(config, *outfile)
+}
+
+func handlePIAError(err error, region string) error {
+	logger.Error("Failed to create PIA client", "error", err, "region", region)
+
+	var validationErr *pia.RegionValidationError
+	if errors.As(err, &validationErr) {
+		fmt.Fprintf(os.Stderr, "Error: Invalid region '%s'\n\n", region)
+		fmt.Fprintf(os.Stderr, "Available regions can be listed with:\n")
+		fmt.Fprintf(os.Stderr, "  pia-wg-config regions\n\n")
+		fmt.Fprintf(os.Stderr, "Popular regions include:\n")
+		fmt.Fprintf(os.Stderr, "  uk_london, de_frankfurt, us_california, japan, netherlands\n")
+		return err
+	}
+
+	fmt.Fprintf(os.Stderr, "Error: Failed to connect to PIA servers\n\n")
+	fmt.Fprintf(os.Stderr, "This could be due to:\n")
+	fmt.Fprintf(os.Stderr, "  - Invalid username or password\n")
+	fmt.Fprintf(os.Stderr, "  - Network connectivity issues\n")
+	fmt.Fprintf(os.Stderr, "  - PIA service unavailable\n\n")
+	fmt.Fprintf(os.Stderr, "Try running with --verbose flag for more details\n")
+	fmt.Fprintf(os.Stderr, "Original error: %v\n", err)
+	return err
+}
+
+func handleConfigGenerationError(err error) error {
+	logger.Error("Failed to generate config", "error", err)
+
+	var authErr *pia.AuthenticationError
+	if errors.As(err, &authErr) {
+		fmt.Fprintf(os.Stderr, "Error: Authentication failed\n\n")
+		fmt.Fprintf(os.Stderr, "Please check:\n")
+		fmt.Fprintf(os.Stderr, "  - Your PIA username and password are correct\n")
+		fmt.Fprintf(os.Stderr, "  - Your PIA subscription is active\n")
+		fmt.Fprintf(os.Stderr, "  - Try connecting through the official PIA app first\n")
+		return err
+	}
+
+	fmt.Fprintf(os.Stderr, "Error: Failed to generate Wireguard configuration\n\n")
+	fmt.Fprintf(os.Stderr, "This could be due to:\n")
+	fmt.Fprintf(os.Stderr, "  - Server communication issues\n")
+	fmt.Fprintf(os.Stderr, "  - Region server unavailable\n")
+	fmt.Fprintf(os.Stderr, "  - Network connectivity problems\n\n")
+	fmt.Fprintf(os.Stderr, "Try running with --verbose flag for more details\n")
+	fmt.Fprintf(os.Stderr, "Original error: %v\n", err)
+	return err
+}
+
+func outputConfig(config string, outfile string) error {
+	if outfile != "" {
+		// Write config to file with secure permissions
+		if err := os.WriteFile(outfile, []byte(config), 0600); err != nil {
+			return fmt.Errorf("failed to write config to file '%s': %w", outfile, err)
+		}
+
+		logger.Info("Wireguard config generated successfully", "file", outfile)
+		fmt.Printf("✓ Wireguard config generated successfully: %s\n", outfile)
+		fmt.Printf("You can now connect using: sudo wg-quick up %s\n", outfile)
+		return nil
+	}
+
+	// Print config to stdout
+	fmt.Println(config)
+	return nil
+}
+
+func printUsage() {
+	fmt.Printf("pia-wg-config version %s\n\n", version)
+	fmt.Println("Generate a Wireguard config for Private Internet Access")
+	fmt.Println()
+	fmt.Println("USAGE:")
+	fmt.Println("  pia-wg-config [options] USERNAME PASSWORD")
+	fmt.Println("  pia-wg-config regions [options]")
+	fmt.Println()
+	fmt.Println("COMMANDS:")
+	fmt.Println("  regions    List all available PIA regions")
+	fmt.Println()
+	fmt.Println("OPTIONS:")
+	fmt.Println("  -o string       Output file for the config (default: stdout)")
+	fmt.Println("  -r string       PIA region to connect to (default: us_california)")
+	fmt.Println("  --verbose       Enable verbose output with structured logging")
+	fmt.Println("  --timeout dur   Timeout for PIA API requests (default: 30s)")
+	fmt.Println("  --help, -h      Show help")
+	fmt.Println("  --version, -v   Show version")
+	fmt.Println()
+	fmt.Println("EXAMPLES:")
+	fmt.Println("  pia-wg-config myuser mypass")
+	fmt.Println("  pia-wg-config -r uk_london myuser mypass")
+	fmt.Println("  pia-wg-config -o config.conf -r de_frankfurt myuser mypass")
+	fmt.Println("  pia-wg-config regions")
+	fmt.Println()
+	fmt.Println("To see available regions:")
+	fmt.Println("  pia-wg-config regions")
 }
