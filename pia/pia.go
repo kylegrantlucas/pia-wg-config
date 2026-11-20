@@ -128,6 +128,9 @@ func (p *PIAClient) GetToken() (string, error) {
 	if err != nil {
 		return "", errors.Wrap(err, "error decoding token response")
 	}
+	if tokenResp.Token == "" {
+		return "", errors.New("token response contained no token")
+	}
 
 	if p.verbose {
 		log.Print("Got token")
@@ -154,24 +157,34 @@ func GetAvailableRegions() (map[Region]string, error) {
 	return regions, nil
 }
 
-// AddKey
+// AddKey registers publickey with the region's Wireguard server, like
+// connect_to_wireguard_with_token.sh in PIA's manual-connections scripts.
 func (p *PIAClient) AddKey(token, publickey string) (AddKeyResult, error) {
 	var addKeyResp AddKeyResult
 	server := p.getWireguardServerForRegion()
 
 	// Build http request
-	url := fmt.Sprintf("https://%v:1337/addKey?pt=%v&pubkey=%v", server.Cn, url.QueryEscape(token), url.QueryEscape(publickey))
+	query := url.Values{"pt": {token}, "pubkey": {publickey}}
+	reqURL := fmt.Sprintf("https://%s:1337/addKey?%s", server.Cn, query.Encode())
 
 	// Send request
-	resp, err := p.executePIARequest(server, url, token)
+	resp, err := p.executePIARequest(server, reqURL)
 	if err != nil {
 		return addKeyResp, errors.Wrap(err, "error executing request")
 	}
+	defer resp.Body.Close()
 
 	// Parse response
-	err = json.NewDecoder(resp.Body).Decode(&addKeyResp)
+	err = json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&addKeyResp)
 	if err != nil {
 		return addKeyResp, errors.Wrap(err, "error decoding add key response")
+	}
+	if addKeyResp.Status != "OK" {
+		return addKeyResp, fmt.Errorf("server rejected key: status %q", addKeyResp.Status)
+	}
+	if addKeyResp.ServerKey == "" || addKeyResp.ServerIP == "" || addKeyResp.PeerIP == "" ||
+		addKeyResp.ServerPort <= 0 || addKeyResp.ServerPort > 65535 {
+		return addKeyResp, errors.New("add key response is missing server key, server IP, server port or peer IP")
 	}
 
 	return addKeyResp, nil
@@ -244,19 +257,14 @@ func (p *PIAClient) generateWireguardServerList(list piaServerList) ServerList {
 	return servers
 }
 
-func (p *PIAClient) executePIARequest(server Server, url, token string) (*http.Response, error) {
-	req, err := http.NewRequest("GET", url, nil)
+func (p *PIAClient) executePIARequest(server Server, reqURL string) (*http.Response, error) {
+	req, err := http.NewRequest("GET", reqURL, nil)
 	if err != nil {
 		return nil, err
 	}
 
 	// Set header to JSON
 	req.Header.Set("Content-Type", "application/json")
-
-	// Set basic auth
-	if token == "" {
-		req.SetBasicAuth(p.username, p.password)
-	}
 
 	// Trust only the PIA CA for the Wireguard API
 	caCertPool := x509.NewCertPool()
@@ -295,6 +303,7 @@ func (p *PIAClient) executePIARequest(server Server, url, token string) (*http.R
 	}
 
 	client := &http.Client{
+		Timeout: 30 * time.Second,
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
 				RootCAs: caCertPool,
@@ -305,12 +314,18 @@ func (p *PIAClient) executePIARequest(server Server, url, token string) (*http.R
 
 	resp, err := client.Do(req)
 	if err != nil {
+		// Drop the request URL from the error: its query string holds the token.
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) {
+			err = fmt.Errorf("%s %s (%s): %w", urlErr.Op, server.Cn, server.IP, urlErr.Err)
+		}
 		return nil, err
 	}
 
 	// Return error if status code is not 200
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("status code %v", resp.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		return nil, fmt.Errorf("unexpected response from %s (%s): %s", server.Cn, server.IP, resp.Status)
 	}
 
 	return resp, nil
