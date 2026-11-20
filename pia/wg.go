@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"fmt"
 	"log"
+	"net"
+	"strconv"
 
 	"text/template"
 
@@ -118,11 +120,15 @@ func (p *PIAWgGenerator) generateConfig(key AddKeyResult, privatekey string) (st
 		return "", errors.Wrap(err, "error parsing wireguard config template")
 	}
 
+	if len(key.DNSServers) == 0 {
+		return "", errors.New("add key response contained no DNS servers")
+	}
+
 	// execute template
 	tc := templateConfig{
 		PrivateKey:          privatekey,
 		PublicKey:           key.ServerKey,
-		Endpoint:            key.ServerIP,
+		Endpoint:            net.JoinHostPort(key.ServerIP, strconv.Itoa(key.ServerPort)),
 		DNS:                 key.DNSServers[0],
 		Address:             key.PeerIP,
 		AllowedIPs:          "0.0.0.0/0",
@@ -145,5 +151,5 @@ DNS = {{.DNS}}
 [Peer]
 PublicKey = {{.PublicKey}}
 AllowedIPs = {{.AllowedIPs}}
-Endpoint = {{.Endpoint}}:1337
+Endpoint = {{.Endpoint}}
 PersistentKeepalive = {{.PersistentKeepalive}}`
