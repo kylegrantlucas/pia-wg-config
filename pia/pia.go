@@ -1,6 +1,7 @@
 package pia
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -12,7 +13,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"strings"
 	"time"
 
 	"github.com/benburkert/dns"
@@ -45,6 +45,7 @@ type piaServerList struct {
 		DNS         string `json:"dns"`
 		PortForward bool   `json:"port_forward"`
 		Geo         bool   `json:"geo"`
+		Offline     bool   `json:"offline"`
 		Servers     struct {
 			Meta []Server `json:"meta"`
 			Wg   []Server `json:"wg"`
@@ -134,7 +135,7 @@ func (p *PIAClient) GetToken() (string, error) {
 	return tokenResp.Token, nil
 }
 
-// GetAvailableRegions returns all available regions
+// GetAvailableRegions returns all online regions that have Wireguard servers
 func (p *PIAClient) GetAvailableRegions() (map[Region]string, error) {
 	serverList, err := p.getServerList()
 	if err != nil {
@@ -143,6 +144,9 @@ func (p *PIAClient) GetAvailableRegions() (map[Region]string, error) {
 
 	regions := make(map[Region]string)
 	for _, r := range serverList.Regions {
+		if r.Offline || len(r.Servers.Wg) == 0 {
+			continue
+		}
 		regions[Region(r.ID)] = r.Name
 	}
 
@@ -183,28 +187,37 @@ func (p *PIAClient) getWireguardServerForRegion() Server {
 	return servers[0]
 }
 
-// getSeverList returns a list of servers from the PIA API
+// serverListURL is the server list used by PIA's manual-connections scripts
+// (get_region.sh). The first line of the response is the JSON document; the
+// remaining lines are a signature.
+const serverListURL = "https://serverlist.piaservers.net/vpninfo/servers/v6"
+
+// getServerList returns a list of servers from the PIA API
 func (p *PIAClient) getServerList() (piaServerList, error) {
 	var serverList piaServerList
 
-	resp, err := http.Get("https://serverlist.piaservers.net/vpninfo/servers/v4")
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Get(serverListURL)
+	if err != nil {
+		return piaServerList{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return piaServerList{}, fmt.Errorf("server list request failed: %s", resp.Status)
+	}
+
+	respBytes, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 	if err != nil {
 		return piaServerList{}, err
 	}
 
-	// Strip the base64 garbage
-	respBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return piaServerList{}, err
-	}
-	respString := string(respBytes)
-	lastBracketInd := strings.LastIndex(respString, "}")
-	safeJSON := respString[:lastBracketInd+1]
+	// Keep only the JSON on the first line, drop the trailing signature
+	jsonBytes, _, _ := bytes.Cut(respBytes, []byte("\n"))
 
 	// Parse the JSON
-	err = json.Unmarshal([]byte(safeJSON), &serverList)
+	err = json.Unmarshal(jsonBytes, &serverList)
 	if err != nil {
-		return piaServerList{}, err
+		return piaServerList{}, errors.Wrap(err, "error decoding server list")
 	}
 
 	// Return list of servers
@@ -216,6 +229,9 @@ func (p *PIAClient) generateWireguardServerList(list piaServerList) ServerList {
 	servers := ServerList{}
 
 	for _, r := range list.Regions {
+		if r.Offline {
+			continue
+		}
 		for _, server := range r.Servers.Wg {
 			servers[Region(r.ID)] = append(servers[Region(r.ID)], Server{
 				Cn: server.Cn,
