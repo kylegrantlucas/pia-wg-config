@@ -146,19 +146,25 @@ func (p *PIAClient) GetToken() (string, error) {
 	return tokenResp.Token, nil
 }
 
+// RegionInfo describes a region from PIA's server list
+type RegionInfo struct {
+	Name        string
+	PortForward bool
+}
+
 // GetAvailableRegions returns all online regions that have Wireguard servers
-func GetAvailableRegions() (map[Region]string, error) {
+func GetAvailableRegions() (map[Region]RegionInfo, error) {
 	serverList, err := getServerList()
 	if err != nil {
 		return nil, err
 	}
 
-	regions := make(map[Region]string)
+	regions := make(map[Region]RegionInfo)
 	for _, r := range serverList.Regions {
 		if r.Offline || len(r.Servers.Wg) == 0 {
 			continue
 		}
-		regions[Region(r.ID)] = r.Name
+		regions[Region(r.ID)] = RegionInfo{Name: r.Name, PortForward: r.PortForward}
 	}
 
 	return regions, nil

@@ -152,17 +152,25 @@ func listRegions(c *cli.Context) error {
 
 	// Sort regions for consistent output
 	var regionList []string
+	width := 0
 	for region := range regions {
 		regionList = append(regionList, string(region))
+		width = max(width, len(region))
 	}
 	sort.Strings(regionList)
 
 	fmt.Println("\nAvailable PIA regions:")
 	fmt.Println("======================")
+	portForwardCount := 0
 	for _, region := range regionList {
-		fmt.Printf("  %s\n", region)
+		if regions[pia.Region(region)].PortForward {
+			portForwardCount++
+			fmt.Printf("  %-*s  (port forwarding)\n", width, region)
+		} else {
+			fmt.Printf("  %s\n", region)
+		}
 	}
-	fmt.Printf("\nTotal: %d regions available\n", len(regionList))
+	fmt.Printf("\nTotal: %d regions available, %d with port forwarding\n", len(regionList), portForwardCount)
 	fmt.Println("\nUsage example:")
 	fmt.Println("  pia-wg-config -r uk USERNAME PASSWORD")
 
