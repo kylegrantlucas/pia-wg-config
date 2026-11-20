@@ -79,7 +79,7 @@ func NewPIAClient(username, password, region string, verbose bool) (*PIAClient, 
 	}
 
 	// Get list of servers
-	serverList, err := piaClient.getServerList()
+	serverList, err := getServerList()
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to fetch server list from PIA")
 	}
@@ -89,11 +89,7 @@ func NewPIAClient(username, password, region string, verbose bool) (*PIAClient, 
 
 	// Validate region exists
 	if _, exists := piaClient.wireguardServers[Region(region)]; !exists {
-		availableRegions := make([]string, 0, len(piaClient.wireguardServers))
-		for r := range piaClient.wireguardServers {
-			availableRegions = append(availableRegions, string(r))
-		}
-		return nil, fmt.Errorf("region '%s' not found. Available regions: %v. Use 'pia-wg-config regions' to see all available regions", region, availableRegions[:5]) // Show first 5 as example
+		return nil, fmt.Errorf("region '%s' not found or has no online Wireguard servers. Use 'pia-wg-config regions' to see all available regions", region)
 	}
 
 	return &piaClient, nil
@@ -136,8 +132,8 @@ func (p *PIAClient) GetToken() (string, error) {
 }
 
 // GetAvailableRegions returns all online regions that have Wireguard servers
-func (p *PIAClient) GetAvailableRegions() (map[Region]string, error) {
-	serverList, err := p.getServerList()
+func GetAvailableRegions() (map[Region]string, error) {
+	serverList, err := getServerList()
 	if err != nil {
 		return nil, err
 	}
@@ -193,7 +189,7 @@ func (p *PIAClient) getWireguardServerForRegion() Server {
 const serverListURL = "https://serverlist.piaservers.net/vpninfo/servers/v6"
 
 // getServerList returns a list of servers from the PIA API
-func (p *PIAClient) getServerList() (piaServerList, error) {
+func getServerList() (piaServerList, error) {
 	var serverList piaServerList
 
 	client := &http.Client{Timeout: 30 * time.Second}
