@@ -2,7 +2,6 @@ package pia
 
 import (
 	"bytes"
-	"fmt"
 	"log"
 	"net"
 	"strconv"
@@ -95,17 +94,10 @@ func (p *PIAWgGenerator) generateKeys() (string, string, error) {
 
 	privateKey, err := wgtypes.GeneratePrivateKey()
 	if err != nil {
-		return "", "", errors.Wrap(err, fmt.Sprintf("failed to generate private key: %v", privateKey.String()))
-	}
-	if p.verbose {
-		log.Println("Private key: ", privateKey)
+		return "", "", errors.Wrap(err, "failed to generate private key")
 	}
 
-	// Call host 'wg pubkey' to generate public key
 	publicKey := privateKey.PublicKey()
-	if err != nil {
-		return "", "", errors.Wrap(err, fmt.Sprintf("failed to generate public key: %v", publicKey.String()))
-	}
 	if p.verbose {
 		log.Println("Public key: ", publicKey)
 	}
