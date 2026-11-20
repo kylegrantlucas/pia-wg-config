@@ -11,9 +11,9 @@ A fast, portable Wireguard config generator for Private Internet Access (PIA) VP
 
 ```bash
 # Connect to different regions
-pia-wg-config -r uk_london USERNAME PASSWORD
-pia-wg-config -r de_frankfurt USERNAME PASSWORD  
-pia-wg-config -r au_sydney USERNAME PASSWORD
+pia-wg-config -r uk USERNAME PASSWORD
+pia-wg-config -r de-frankfurt USERNAME PASSWORD  
+pia-wg-config -r aus USERNAME PASSWORD
 pia-wg-config -r japan USERNAME PASSWORD
 ```
 
@@ -68,10 +68,10 @@ go install github.com/kylegrantlucas/pia-wg-config@latest
 pia-wg-config USERNAME PASSWORD
 
 # Generate config for a specific region
-pia-wg-config -r uk_london USERNAME PASSWORD
+pia-wg-config -r uk USERNAME PASSWORD
 
 # Save config to file
-pia-wg-config -o wg0.conf -r de_frankfurt USERNAME PASSWORD
+pia-wg-config -o wg0.conf -r de-frankfurt USERNAME PASSWORD
 
 # Enable verbose output
 pia-wg-config -v -r japan USERNAME PASSWORD
@@ -106,14 +106,14 @@ Here are some commonly used region codes:
 | Region Code | Location |
 |-------------|----------|
 | `us_california` | United States - California |
-| `us_east` | United States - East Coast |
-| `uk_london` | United Kingdom - London |
-| `de_frankfurt` | Germany - Frankfurt |
+| `us-newjersey` | United States - East Coast |
+| `uk` | United Kingdom - London |
+| `de-frankfurt` | Germany - Frankfurt |
 | `ca_toronto` | Canada - Toronto |
-| `au_sydney` | Australia - Sydney |
+| `aus` | Australia - Sydney |
 | `japan` | Japan |
-| `singapore` | Singapore |
-| `netherlands` | Netherlands |
+| `sg` | Singapore |
+| `nl_amsterdam` | Netherlands |
 | `sweden` | Sweden |
 
 Run `pia-wg-config regions` for the complete list.
@@ -122,19 +122,19 @@ Run `pia-wg-config regions` for the complete list.
 
 ### Connect to UK servers
 ```bash
-pia-wg-config -r uk_london -o uk-wg.conf myusername mypassword
+pia-wg-config -r uk -o uk-wg.conf myusername mypassword
 sudo wg-quick up uk-wg.conf
 ```
 
 ### Connect to German servers
 ```bash
-pia-wg-config -r de_frankfurt -o germany.conf myusername mypassword
+pia-wg-config -r de-frankfurt -o germany.conf myusername mypassword
 sudo wg-quick up germany.conf
 ```
 
 ### Quick connection (output to stdout)
 ```bash
-pia-wg-config -r netherlands myusername mypassword > vpn.conf
+pia-wg-config -r nl_amsterdam myusername mypassword > vpn.conf
 ```
 
 ## 🔧 Integration Examples
@@ -142,7 +142,7 @@ pia-wg-config -r netherlands myusername mypassword > vpn.conf
 ### Bash Script for Multiple Regions
 ```bash
 #!/bin/bash
-REGIONS=("uk_london" "de_frankfurt" "us_california" "japan")
+REGIONS=("uk" "de-frankfurt" "us_california" "japan")
 USERNAME="your_username"
 PASSWORD="your_password"
 
