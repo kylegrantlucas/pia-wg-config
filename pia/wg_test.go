@@ -4,7 +4,12 @@ import (
 	"testing"
 )
 
-type PIAClientMock struct{}
+type PIAClientMock struct {
+	serverPort int
+	dnsServers []string
+	region     string
+	serverName string
+}
 
 func (p *PIAClientMock) GetToken() (string, error) {
 	return "", nil
@@ -13,9 +18,12 @@ func (p *PIAClientMock) GetToken() (string, error) {
 func (p *PIAClientMock) AddKey(token, publickey string) (AddKeyResult, error) {
 	return AddKeyResult{
 		ServerIP:   "1.2.3.4",
-		DNSServers: []string{"1.1.1.1"},
+		ServerPort: p.serverPort,
+		DNSServers: p.dnsServers,
 		PeerIP:     "4.5.6.7",
 		ServerKey:  publickey,
+		Region:     p.region,
+		ServerName: p.serverName,
 	}, nil
 }
 
@@ -36,9 +44,31 @@ func TestPIAWgGenerator_Generate(t *testing.T) {
 		{
 			name: "basic generate",
 			fields: fields{
-				pia: &PIAClientMock{},
+				pia: &PIAClientMock{serverPort: 1337, dnsServers: []string{"1.1.1.1"}, region: "de-frankfurt", serverName: "Server-1-0a"},
 				config: PIAWgGeneratorConfig{
 					Verbose:    false,
+					PrivateKey: "test_privatekey",
+					PublicKey:  "test_publickey",
+				},
+			},
+			want: `# Region: de-frankfurt
+# ServerName: Server-1-0a
+[Interface]
+PrivateKey = test_privatekey
+Address = 4.5.6.7
+DNS = 1.1.1.1
+[Peer]
+PublicKey = test_publickey
+AllowedIPs = 0.0.0.0/0
+Endpoint = 1.2.3.4:1337
+PersistentKeepalive = 25`,
+			wantErr: false,
+		},
+		{
+			name: "endpoint uses server port from response",
+			fields: fields{
+				pia: &PIAClientMock{serverPort: 51820, dnsServers: []string{"1.1.1.1"}},
+				config: PIAWgGeneratorConfig{
 					PrivateKey: "test_privatekey",
 					PublicKey:  "test_publickey",
 				},
@@ -50,9 +80,19 @@ DNS = 1.1.1.1
 [Peer]
 PublicKey = test_publickey
 AllowedIPs = 0.0.0.0/0
-Endpoint = 1.2.3.4:1337
+Endpoint = 1.2.3.4:51820
 PersistentKeepalive = 25`,
-			wantErr: false,
+		},
+		{
+			name: "no DNS servers in response",
+			fields: fields{
+				pia: &PIAClientMock{serverPort: 1337},
+				config: PIAWgGeneratorConfig{
+					PrivateKey: "test_privatekey",
+					PublicKey:  "test_publickey",
+				},
+			},
+			wantErr: true,
 		},
 	}
 	for _, tt := range tests {

@@ -2,8 +2,9 @@ package pia
 
 import (
 	"bytes"
-	"fmt"
 	"log"
+	"net"
+	"strconv"
 
 	"text/template"
 
@@ -33,6 +34,8 @@ type templateConfig struct {
 	PrivateKey          string
 	PublicKey           string
 	PersistentKeepalive string
+	Region              string
+	ServerName          string
 }
 
 func NewPIAWgGenerator(pia PIAWgClient, config PIAWgGeneratorConfig) *PIAWgGenerator {
@@ -93,17 +96,10 @@ func (p *PIAWgGenerator) generateKeys() (string, string, error) {
 
 	privateKey, err := wgtypes.GeneratePrivateKey()
 	if err != nil {
-		return "", "", errors.Wrap(err, fmt.Sprintf("failed to generate private key: %v", privateKey.String()))
-	}
-	if p.verbose {
-		log.Println("Private key: ", privateKey)
+		return "", "", errors.Wrap(err, "failed to generate private key")
 	}
 
-	// Call host 'wg pubkey' to generate public key
 	publicKey := privateKey.PublicKey()
-	if err != nil {
-		return "", "", errors.Wrap(err, fmt.Sprintf("failed to generate public key: %v", publicKey.String()))
-	}
 	if p.verbose {
 		log.Println("Public key: ", publicKey)
 	}
@@ -118,15 +114,21 @@ func (p *PIAWgGenerator) generateConfig(key AddKeyResult, privatekey string) (st
 		return "", errors.Wrap(err, "error parsing wireguard config template")
 	}
 
+	if len(key.DNSServers) == 0 {
+		return "", errors.New("add key response contained no DNS servers")
+	}
+
 	// execute template
 	tc := templateConfig{
 		PrivateKey:          privatekey,
 		PublicKey:           key.ServerKey,
-		Endpoint:            key.ServerIP,
+		Endpoint:            net.JoinHostPort(key.ServerIP, strconv.Itoa(key.ServerPort)),
 		DNS:                 key.DNSServers[0],
 		Address:             key.PeerIP,
 		AllowedIPs:          "0.0.0.0/0",
 		PersistentKeepalive: "25",
+		Region:              key.Region,
+		ServerName:          key.ServerName,
 	}
 
 	var config bytes.Buffer
@@ -138,12 +140,21 @@ func (p *PIAWgGenerator) generateConfig(key AddKeyResult, privatekey string) (st
 	return config.String(), nil
 }
 
-var wireguardConfigTemplate = `[Interface]
+// The region and server name go in a comment block at the top: wg(8) and
+// wg-quick(8) reject unknown keys, while gluetun needs the server name as
+// SERVER_NAMES for PIA port forwarding.
+var wireguardConfigTemplate = `{{if .Region -}}
+# Region: {{.Region}}
+{{end -}}
+{{if .ServerName -}}
+# ServerName: {{.ServerName}}
+{{end -}}
+[Interface]
 PrivateKey = {{.PrivateKey}}
 Address = {{.Address}}
 DNS = {{.DNS}}
 [Peer]
 PublicKey = {{.PublicKey}}
 AllowedIPs = {{.AllowedIPs}}
-Endpoint = {{.Endpoint}}:1337
+Endpoint = {{.Endpoint}}
 PersistentKeepalive = {{.PersistentKeepalive}}`

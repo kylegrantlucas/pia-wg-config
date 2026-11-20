@@ -43,6 +43,11 @@ func main() {
 				Value:   false,
 				Usage:   "Print verbose output",
 			},
+			&cli.BoolFlag{
+				Name:    "port-forwarding",
+				Aliases: []string{"p"},
+				Usage:   "Fail unless the region supports port forwarding (e.g. for gluetun with VPN_PORT_FORWARDING=on)",
+			},
 		},
 	}
 
@@ -61,8 +66,8 @@ func defaultAction(c *cli.Context) error {
 		fmt.Println()
 		fmt.Println("Examples:")
 		fmt.Println("  pia-wg-config myuser mypass")
-		fmt.Println("  pia-wg-config -r uk_london myuser mypass")
-		fmt.Println("  pia-wg-config -o config.conf -r de_frankfurt myuser mypass")
+		fmt.Println("  pia-wg-config -r uk myuser mypass")
+		fmt.Println("  pia-wg-config -o config.conf -r de-frankfurt myuser mypass")
 		fmt.Println()
 		fmt.Println("To see available regions:")
 		fmt.Println("  pia-wg-config regions")
@@ -96,6 +101,10 @@ func defaultAction(c *cli.Context) error {
 		fmt.Printf("  - PIA service unavailable\n")
 		fmt.Printf("\nTry running with -v flag for more details\n")
 		return cli.Exit("", 1)
+	}
+
+	if c.Bool("port-forwarding") && !piaClient.SupportsPortForwarding() {
+		return cli.Exit(fmt.Sprintf("Error: region '%s' does not support port forwarding (run 'pia-wg-config regions' to see which regions do)", region), 1)
 	}
 
 	// create wg config generator
@@ -145,32 +154,34 @@ func defaultAction(c *cli.Context) error {
 func listRegions(c *cli.Context) error {
 	fmt.Println("Fetching available regions from PIA...")
 
-	// Create a dummy client just to get the server list
-	piaClient, err := pia.NewPIAClient("", "", "us_california", false)
-	if err != nil {
-		return fmt.Errorf("failed to fetch regions: %v", err)
-	}
-
-	regions, err := piaClient.GetAvailableRegions()
+	regions, err := pia.GetAvailableRegions()
 	if err != nil {
 		return fmt.Errorf("failed to get regions: %v", err)
 	}
 
 	// Sort regions for consistent output
 	var regionList []string
+	width := 0
 	for region := range regions {
 		regionList = append(regionList, string(region))
+		width = max(width, len(region))
 	}
 	sort.Strings(regionList)
 
 	fmt.Println("\nAvailable PIA regions:")
 	fmt.Println("======================")
+	portForwardCount := 0
 	for _, region := range regionList {
-		fmt.Printf("  %s\n", region)
+		if regions[pia.Region(region)].PortForward {
+			portForwardCount++
+			fmt.Printf("  %-*s  (port forwarding)\n", width, region)
+		} else {
+			fmt.Printf("  %s\n", region)
+		}
 	}
-	fmt.Printf("\nTotal: %d regions available\n", len(regionList))
+	fmt.Printf("\nTotal: %d regions available, %d with port forwarding\n", len(regionList), portForwardCount)
 	fmt.Println("\nUsage example:")
-	fmt.Println("  pia-wg-config -r uk_london USERNAME PASSWORD")
+	fmt.Println("  pia-wg-config -r uk USERNAME PASSWORD")
 
 	return nil
 }
