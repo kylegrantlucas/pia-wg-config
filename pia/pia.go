@@ -5,10 +5,10 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"net"
 	"net/http"
@@ -33,8 +33,13 @@ type PIAClient struct {
 	username         string
 	password         string
 	verbose          bool
-	caCert           []byte
 }
+
+// piaCACert is PIA's RSA-4096 CA (ca.rsa.4096.crt from pia-foss/manual-connections),
+// which signs the certificates of the Wireguard API on port 1337.
+//
+//go:embed ca.rsa.4096.crt
+var piaCACert []byte
 
 type piaServerList struct {
 	Regions []struct {
@@ -253,13 +258,11 @@ func (p *PIAClient) executePIARequest(server Server, url, token string) (*http.R
 		req.SetBasicAuth(p.username, p.password)
 	}
 
-	// Add certificate to shared pool
-	err = p.downloadPIACertificate()
-	if err != nil {
-		return nil, errors.Wrap(err, "error downloading ca certificate")
-	}
+	// Trust only the PIA CA for the Wireguard API
 	caCertPool := x509.NewCertPool()
-	caCertPool.AppendCertsFromPEM(p.caCert)
+	if !caCertPool.AppendCertsFromPEM(piaCACert) {
+		return nil, errors.New("error loading embedded PIA CA certificate")
+	}
 
 	// Create DNS resolver for PIA addresses
 	zone := &dns.Zone{
@@ -311,26 +314,4 @@ func (p *PIAClient) executePIARequest(server Server, url, token string) (*http.R
 	}
 
 	return resp, nil
-}
-
-// downloadPIACertificate downloads the PIA certificate
-func (p *PIAClient) downloadPIACertificate() error {
-	// caCert already loaded
-	if len(p.caCert) > 0 {
-		return nil
-	}
-
-	// Download certificate
-	resp, err := http.Get("https://raw.githubusercontent.com/pia-foss/desktop/master/daemon/res/ca/rsa_4096.crt")
-	if err != nil {
-		return err
-	}
-
-	// Parse certificate
-	p.caCert, err = ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return err
-	}
-
-	return nil
 }
