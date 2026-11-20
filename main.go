@@ -43,6 +43,11 @@ func main() {
 				Value:   false,
 				Usage:   "Print verbose output",
 			},
+			&cli.BoolFlag{
+				Name:    "port-forwarding",
+				Aliases: []string{"p"},
+				Usage:   "Fail unless the region supports port forwarding (e.g. for gluetun with VPN_PORT_FORWARDING=on)",
+			},
 		},
 	}
 
@@ -96,6 +101,10 @@ func defaultAction(c *cli.Context) error {
 		fmt.Printf("  - PIA service unavailable\n")
 		fmt.Printf("\nTry running with -v flag for more details\n")
 		return cli.Exit("", 1)
+	}
+
+	if c.Bool("port-forwarding") && !piaClient.SupportsPortForwarding() {
+		return cli.Exit(fmt.Sprintf("Error: region '%s' does not support port forwarding (run 'pia-wg-config regions' to see which regions do)", region), 1)
 	}
 
 	// create wg config generator

@@ -30,6 +30,7 @@ type ServerList map[Region][]Server
 type PIAClient struct {
 	region           string
 	wireguardServers ServerList
+	portForward      bool
 	username         string
 	password         string
 	verbose          bool
@@ -104,7 +105,19 @@ func NewPIAClient(username, password, region string, verbose bool) (*PIAClient, 
 		return nil, fmt.Errorf("region '%s' not found or has no online Wireguard servers. Use 'pia-wg-config regions' to see all available regions", region)
 	}
 
+	for _, r := range serverList.Regions {
+		if r.ID == region {
+			piaClient.portForward = r.PortForward
+			break
+		}
+	}
+
 	return &piaClient, nil
+}
+
+// SupportsPortForwarding reports whether the client's region supports port forwarding
+func (p *PIAClient) SupportsPortForwarding() bool {
+	return p.portForward
 }
 
 // tokenURL is PIA's central token API (the same endpoint used by PIA's
