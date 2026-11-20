@@ -67,6 +67,11 @@ type AddKeyResult struct {
 	PeerIP     string   `json:"peer_ip"`
 	PeerPubkey string   `json:"peer_pubkey"`
 	DNSServers []string `json:"dns_servers"`
+
+	// ServerName is the TLS server name (CN) of the Wireguard server the key
+	// was registered with. It is not part of the API response. PIA's port
+	// forwarding API on that server is verified against this name.
+	ServerName string `json:"-"`
 }
 
 type Server struct {
@@ -186,6 +191,7 @@ func (p *PIAClient) AddKey(token, publickey string) (AddKeyResult, error) {
 		addKeyResp.ServerPort <= 0 || addKeyResp.ServerPort > 65535 {
 		return addKeyResp, errors.New("add key response is missing server key, server IP, server port or peer IP")
 	}
+	addKeyResp.ServerName = server.Cn
 
 	return addKeyResp, nil
 }
@@ -197,6 +203,9 @@ func (p *PIAClient) getWireguardServerForRegion() Server {
 	servers := p.wireguardServers[Region(p.region)]
 	if len(servers) == 0 {
 		log.Fatalf("No Wireguard servers available for region: %s", p.region)
+	}
+	if p.verbose {
+		log.Printf("Using wireguard server %s (%s)", servers[0].Cn, servers[0].IP)
 	}
 	return servers[0]
 }
