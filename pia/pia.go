@@ -1,18 +1,18 @@
 package pia
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"net"
 	"net/http"
 	"net/url"
-	"strings"
 	"time"
 
 	"github.com/benburkert/dns"
@@ -33,8 +33,13 @@ type PIAClient struct {
 	username         string
 	password         string
 	verbose          bool
-	caCert           []byte
 }
+
+// piaCACert is PIA's RSA-4096 CA (ca.rsa.4096.crt from pia-foss/manual-connections),
+// which signs the certificates of the Wireguard API on port 1337.
+//
+//go:embed ca.rsa.4096.crt
+var piaCACert []byte
 
 type piaServerList struct {
 	Regions []struct {
@@ -45,6 +50,7 @@ type piaServerList struct {
 		DNS         string `json:"dns"`
 		PortForward bool   `json:"port_forward"`
 		Geo         bool   `json:"geo"`
+		Offline     bool   `json:"offline"`
 		Servers     struct {
 			Meta []Server `json:"meta"`
 			Wg   []Server `json:"wg"`
@@ -78,7 +84,7 @@ func NewPIAClient(username, password, region string, verbose bool) (*PIAClient, 
 	}
 
 	// Get list of servers
-	serverList, err := piaClient.getServerList()
+	serverList, err := getServerList()
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to fetch server list from PIA")
 	}
@@ -88,11 +94,7 @@ func NewPIAClient(username, password, region string, verbose bool) (*PIAClient, 
 
 	// Validate region exists
 	if _, exists := piaClient.wireguardServers[Region(region)]; !exists {
-		availableRegions := make([]string, 0, len(piaClient.wireguardServers))
-		for r := range piaClient.wireguardServers {
-			availableRegions = append(availableRegions, string(r))
-		}
-		return nil, fmt.Errorf("region '%s' not found. Available regions: %v. Use 'pia-wg-config regions' to see all available regions", region, availableRegions[:5]) // Show first 5 as example
+		return nil, fmt.Errorf("region '%s' not found or has no online Wireguard servers. Use 'pia-wg-config regions' to see all available regions", region)
 	}
 
 	return &piaClient, nil
@@ -126,6 +128,9 @@ func (p *PIAClient) GetToken() (string, error) {
 	if err != nil {
 		return "", errors.Wrap(err, "error decoding token response")
 	}
+	if tokenResp.Token == "" {
+		return "", errors.New("token response contained no token")
+	}
 
 	if p.verbose {
 		log.Print("Got token")
@@ -134,39 +139,52 @@ func (p *PIAClient) GetToken() (string, error) {
 	return tokenResp.Token, nil
 }
 
-// GetAvailableRegions returns all available regions
-func (p *PIAClient) GetAvailableRegions() (map[Region]string, error) {
-	serverList, err := p.getServerList()
+// GetAvailableRegions returns all online regions that have Wireguard servers
+func GetAvailableRegions() (map[Region]string, error) {
+	serverList, err := getServerList()
 	if err != nil {
 		return nil, err
 	}
 
 	regions := make(map[Region]string)
 	for _, r := range serverList.Regions {
+		if r.Offline || len(r.Servers.Wg) == 0 {
+			continue
+		}
 		regions[Region(r.ID)] = r.Name
 	}
 
 	return regions, nil
 }
 
-// AddKey
+// AddKey registers publickey with the region's Wireguard server, like
+// connect_to_wireguard_with_token.sh in PIA's manual-connections scripts.
 func (p *PIAClient) AddKey(token, publickey string) (AddKeyResult, error) {
 	var addKeyResp AddKeyResult
 	server := p.getWireguardServerForRegion()
 
 	// Build http request
-	url := fmt.Sprintf("https://%v:1337/addKey?pt=%v&pubkey=%v", server.Cn, url.QueryEscape(token), url.QueryEscape(publickey))
+	query := url.Values{"pt": {token}, "pubkey": {publickey}}
+	reqURL := fmt.Sprintf("https://%s:1337/addKey?%s", server.Cn, query.Encode())
 
 	// Send request
-	resp, err := p.executePIARequest(server, url, token)
+	resp, err := p.executePIARequest(server, reqURL)
 	if err != nil {
 		return addKeyResp, errors.Wrap(err, "error executing request")
 	}
+	defer resp.Body.Close()
 
 	// Parse response
-	err = json.NewDecoder(resp.Body).Decode(&addKeyResp)
+	err = json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&addKeyResp)
 	if err != nil {
 		return addKeyResp, errors.Wrap(err, "error decoding add key response")
+	}
+	if addKeyResp.Status != "OK" {
+		return addKeyResp, fmt.Errorf("server rejected key: status %q", addKeyResp.Status)
+	}
+	if addKeyResp.ServerKey == "" || addKeyResp.ServerIP == "" || addKeyResp.PeerIP == "" ||
+		addKeyResp.ServerPort <= 0 || addKeyResp.ServerPort > 65535 {
+		return addKeyResp, errors.New("add key response is missing server key, server IP, server port or peer IP")
 	}
 
 	return addKeyResp, nil
@@ -183,28 +201,37 @@ func (p *PIAClient) getWireguardServerForRegion() Server {
 	return servers[0]
 }
 
-// getSeverList returns a list of servers from the PIA API
-func (p *PIAClient) getServerList() (piaServerList, error) {
+// serverListURL is the server list used by PIA's manual-connections scripts
+// (get_region.sh). The first line of the response is the JSON document; the
+// remaining lines are a signature.
+const serverListURL = "https://serverlist.piaservers.net/vpninfo/servers/v6"
+
+// getServerList returns a list of servers from the PIA API
+func getServerList() (piaServerList, error) {
 	var serverList piaServerList
 
-	resp, err := http.Get("https://serverlist.piaservers.net/vpninfo/servers/v4")
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Get(serverListURL)
+	if err != nil {
+		return piaServerList{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return piaServerList{}, fmt.Errorf("server list request failed: %s", resp.Status)
+	}
+
+	respBytes, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 	if err != nil {
 		return piaServerList{}, err
 	}
 
-	// Strip the base64 garbage
-	respBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return piaServerList{}, err
-	}
-	respString := string(respBytes)
-	lastBracketInd := strings.LastIndex(respString, "}")
-	safeJSON := respString[:lastBracketInd+1]
+	// Keep only the JSON on the first line, drop the trailing signature
+	jsonBytes, _, _ := bytes.Cut(respBytes, []byte("\n"))
 
 	// Parse the JSON
-	err = json.Unmarshal([]byte(safeJSON), &serverList)
+	err = json.Unmarshal(jsonBytes, &serverList)
 	if err != nil {
-		return piaServerList{}, err
+		return piaServerList{}, errors.Wrap(err, "error decoding server list")
 	}
 
 	// Return list of servers
@@ -216,6 +243,9 @@ func (p *PIAClient) generateWireguardServerList(list piaServerList) ServerList {
 	servers := ServerList{}
 
 	for _, r := range list.Regions {
+		if r.Offline {
+			continue
+		}
 		for _, server := range r.Servers.Wg {
 			servers[Region(r.ID)] = append(servers[Region(r.ID)], Server{
 				Cn: server.Cn,
@@ -227,8 +257,8 @@ func (p *PIAClient) generateWireguardServerList(list piaServerList) ServerList {
 	return servers
 }
 
-func (p *PIAClient) executePIARequest(server Server, url, token string) (*http.Response, error) {
-	req, err := http.NewRequest("GET", url, nil)
+func (p *PIAClient) executePIARequest(server Server, reqURL string) (*http.Response, error) {
+	req, err := http.NewRequest("GET", reqURL, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -236,18 +266,11 @@ func (p *PIAClient) executePIARequest(server Server, url, token string) (*http.R
 	// Set header to JSON
 	req.Header.Set("Content-Type", "application/json")
 
-	// Set basic auth
-	if token == "" {
-		req.SetBasicAuth(p.username, p.password)
-	}
-
-	// Add certificate to shared pool
-	err = p.downloadPIACertificate()
-	if err != nil {
-		return nil, errors.Wrap(err, "error downloading ca certificate")
-	}
+	// Trust only the PIA CA for the Wireguard API
 	caCertPool := x509.NewCertPool()
-	caCertPool.AppendCertsFromPEM(p.caCert)
+	if !caCertPool.AppendCertsFromPEM(piaCACert) {
+		return nil, errors.New("error loading embedded PIA CA certificate")
+	}
 
 	// Create DNS resolver for PIA addresses
 	zone := &dns.Zone{
@@ -280,6 +303,7 @@ func (p *PIAClient) executePIARequest(server Server, url, token string) (*http.R
 	}
 
 	client := &http.Client{
+		Timeout: 30 * time.Second,
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
 				RootCAs: caCertPool,
@@ -290,35 +314,19 @@ func (p *PIAClient) executePIARequest(server Server, url, token string) (*http.R
 
 	resp, err := client.Do(req)
 	if err != nil {
+		// Drop the request URL from the error: its query string holds the token.
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) {
+			err = fmt.Errorf("%s %s (%s): %w", urlErr.Op, server.Cn, server.IP, urlErr.Err)
+		}
 		return nil, err
 	}
 
 	// Return error if status code is not 200
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("status code %v", resp.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		return nil, fmt.Errorf("unexpected response from %s (%s): %s", server.Cn, server.IP, resp.Status)
 	}
 
 	return resp, nil
-}
-
-// downloadPIACertificate downloads the PIA certificate
-func (p *PIAClient) downloadPIACertificate() error {
-	// caCert already loaded
-	if len(p.caCert) > 0 {
-		return nil
-	}
-
-	// Download certificate
-	resp, err := http.Get("https://raw.githubusercontent.com/pia-foss/desktop/master/daemon/res/ca/rsa_4096.crt")
-	if err != nil {
-		return err
-	}
-
-	// Parse certificate
-	p.caCert, err = ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return err
-	}
-
-	return nil
 }

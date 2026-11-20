@@ -61,8 +61,8 @@ func defaultAction(c *cli.Context) error {
 		fmt.Println()
 		fmt.Println("Examples:")
 		fmt.Println("  pia-wg-config myuser mypass")
-		fmt.Println("  pia-wg-config -r uk_london myuser mypass")
-		fmt.Println("  pia-wg-config -o config.conf -r de_frankfurt myuser mypass")
+		fmt.Println("  pia-wg-config -r uk myuser mypass")
+		fmt.Println("  pia-wg-config -o config.conf -r de-frankfurt myuser mypass")
 		fmt.Println()
 		fmt.Println("To see available regions:")
 		fmt.Println("  pia-wg-config regions")
@@ -145,13 +145,7 @@ func defaultAction(c *cli.Context) error {
 func listRegions(c *cli.Context) error {
 	fmt.Println("Fetching available regions from PIA...")
 
-	// Create a dummy client just to get the server list
-	piaClient, err := pia.NewPIAClient("", "", "us_california", false)
-	if err != nil {
-		return fmt.Errorf("failed to fetch regions: %v", err)
-	}
-
-	regions, err := piaClient.GetAvailableRegions()
+	regions, err := pia.GetAvailableRegions()
 	if err != nil {
 		return fmt.Errorf("failed to get regions: %v", err)
 	}
@@ -170,7 +164,7 @@ func listRegions(c *cli.Context) error {
 	}
 	fmt.Printf("\nTotal: %d regions available\n", len(regionList))
 	fmt.Println("\nUsage example:")
-	fmt.Println("  pia-wg-config -r uk_london USERNAME PASSWORD")
+	fmt.Println("  pia-wg-config -r uk USERNAME PASSWORD")
 
 	return nil
 }

@@ -2,8 +2,9 @@ package pia
 
 import (
 	"bytes"
-	"fmt"
 	"log"
+	"net"
+	"strconv"
 
 	"text/template"
 
@@ -93,17 +94,10 @@ func (p *PIAWgGenerator) generateKeys() (string, string, error) {
 
 	privateKey, err := wgtypes.GeneratePrivateKey()
 	if err != nil {
-		return "", "", errors.Wrap(err, fmt.Sprintf("failed to generate private key: %v", privateKey.String()))
-	}
-	if p.verbose {
-		log.Println("Private key: ", privateKey)
+		return "", "", errors.Wrap(err, "failed to generate private key")
 	}
 
-	// Call host 'wg pubkey' to generate public key
 	publicKey := privateKey.PublicKey()
-	if err != nil {
-		return "", "", errors.Wrap(err, fmt.Sprintf("failed to generate public key: %v", publicKey.String()))
-	}
 	if p.verbose {
 		log.Println("Public key: ", publicKey)
 	}
@@ -118,11 +112,15 @@ func (p *PIAWgGenerator) generateConfig(key AddKeyResult, privatekey string) (st
 		return "", errors.Wrap(err, "error parsing wireguard config template")
 	}
 
+	if len(key.DNSServers) == 0 {
+		return "", errors.New("add key response contained no DNS servers")
+	}
+
 	// execute template
 	tc := templateConfig{
 		PrivateKey:          privatekey,
 		PublicKey:           key.ServerKey,
-		Endpoint:            key.ServerIP,
+		Endpoint:            net.JoinHostPort(key.ServerIP, strconv.Itoa(key.ServerPort)),
 		DNS:                 key.DNSServers[0],
 		Address:             key.PeerIP,
 		AllowedIPs:          "0.0.0.0/0",
@@ -145,5 +143,5 @@ DNS = {{.DNS}}
 [Peer]
 PublicKey = {{.PublicKey}}
 AllowedIPs = {{.AllowedIPs}}
-Endpoint = {{.Endpoint}}:1337
+Endpoint = {{.Endpoint}}
 PersistentKeepalive = {{.PersistentKeepalive}}`
