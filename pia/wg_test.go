@@ -7,6 +7,7 @@ import (
 type PIAClientMock struct {
 	serverPort int
 	dnsServers []string
+	region     string
 	serverName string
 }
 
@@ -21,6 +22,7 @@ func (p *PIAClientMock) AddKey(token, publickey string) (AddKeyResult, error) {
 		DNSServers: p.dnsServers,
 		PeerIP:     "4.5.6.7",
 		ServerKey:  publickey,
+		Region:     p.region,
 		ServerName: p.serverName,
 	}, nil
 }
@@ -42,14 +44,15 @@ func TestPIAWgGenerator_Generate(t *testing.T) {
 		{
 			name: "basic generate",
 			fields: fields{
-				pia: &PIAClientMock{serverPort: 1337, dnsServers: []string{"1.1.1.1"}, serverName: "Server-1-0a"},
+				pia: &PIAClientMock{serverPort: 1337, dnsServers: []string{"1.1.1.1"}, region: "de-frankfurt", serverName: "Server-1-0a"},
 				config: PIAWgGeneratorConfig{
 					Verbose:    false,
 					PrivateKey: "test_privatekey",
 					PublicKey:  "test_publickey",
 				},
 			},
-			want: `# ServerName: Server-1-0a
+			want: `# Region: de-frankfurt
+# ServerName: Server-1-0a
 [Interface]
 PrivateKey = test_privatekey
 Address = 4.5.6.7
