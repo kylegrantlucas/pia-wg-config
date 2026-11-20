@@ -93,11 +93,12 @@ pia-wg-config [OPTIONS] USERNAME PASSWORD
 - `-r, --region` - Region to connect to (default: "us_california")
 - `-o, --outfile` - Output file for the config (default: stdout)
 - `-v, --verbose` - Enable verbose output
+- `-p, --port-forwarding` - Fail unless the region supports port forwarding
 - `-h, --help` - Show help
 
 ### Subcommands
 
-- `pia-wg-config regions` - List all available PIA regions
+- `pia-wg-config regions` - List all available PIA regions, marking those that support port forwarding
 
 ## 🌐 Popular Regions
 
@@ -162,6 +163,49 @@ RUN apk --no-cache add ca-certificates wireguard-tools
 COPY --from=builder /go/bin/pia-wg-config /usr/local/bin/
 ENTRYPOINT ["pia-wg-config"]
 ```
+
+### gluetun with Port Forwarding
+
+[gluetun](https://github.com/qdm12/gluetun) has no native PIA WireGuard support, but it can use a generated config with its [custom provider](https://github.com/qdm12/gluetun-wiki/blob/main/setup/providers/custom.md) and still run its PIA port forwarding.
+
+1. Pick a region marked `(port forwarding)` in `pia-wg-config regions` (no US region supports it) and generate the config into gluetun's directory. `-p` makes the tool fail if the region cannot forward ports:
+
+   ```bash
+   pia-wg-config -p -r de-frankfurt -o gluetun/wireguard/wg0.conf USERNAME PASSWORD
+   ```
+
+2. The comment block at the top of the config names the server it was registered with, which gluetun needs as `SERVER_NAMES` to verify PIA's port forwarding API:
+
+   ```bash
+   grep ServerName gluetun/wireguard/wg0.conf
+   # ServerName: Server-11008-4a
+   ```
+
+   It is a comment on purpose: `wg-quick` rejects unknown keys.
+
+3. Point gluetun at the config and set the server name:
+
+   ```yaml
+   services:
+     gluetun:
+       image: qmcgaw/gluetun
+       cap_add:
+         - NET_ADMIN
+       devices:
+         - /dev/net/tun:/dev/net/tun
+       volumes:
+         - ./gluetun:/gluetun # wg0.conf is read from /gluetun/wireguard/wg0.conf
+       environment:
+         - VPN_SERVICE_PROVIDER=custom
+         - VPN_TYPE=wireguard
+         - VPN_PORT_FORWARDING=on
+         - VPN_PORT_FORWARDING_PROVIDER=private internet access
+         - VPN_PORT_FORWARDING_USERNAME=${PIA_USERNAME}
+         - VPN_PORT_FORWARDING_PASSWORD=${PIA_PASSWORD}
+         - SERVER_NAMES=Server-11008-4a # ServerName from wg0.conf
+   ```
+
+Every run registers a new key, possibly on a different server, so update `SERVER_NAMES` whenever you regenerate `wg0.conf`.
 
 ## 🏗️ Building from Source
 

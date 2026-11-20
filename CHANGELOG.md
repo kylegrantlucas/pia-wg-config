@@ -16,6 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Examples for popular regions in README
 - Integration examples (Docker, Bash scripts)
 - Troubleshooting section in documentation
+- Generated configs name the Wireguard server in a `# ServerName: …` comment at the top, for gluetun's `SERVER_NAMES`
+- Generated configs name the region in a `# Region: …` comment at the top
+- `regions` marks regions that support port forwarding
+- `-p/--port-forwarding` flag that fails unless the region supports port forwarding
+- README section on using the config with gluetun and its PIA port forwarding
 
 ### Changed
 - Improved README with clear emphasis on region selection
